@@ -108,19 +108,24 @@ function runMigrations(db: Database.Database): void {
   const fkInfo = db.pragma("foreign_key_list(message_parents)") as { table: string; from: string }[];
   const hasParentFk = fkInfo.some((fk) => fk.from === "parent_id" && fk.table === "messages");
   if (hasParentFk) {
+    // Wrap the table recreation in a transaction to prevent data loss if the
+    // process crashes mid-migration. FK must be disabled outside of transactions.
     db.pragma("foreign_keys = OFF");
-    db.exec(`
-      CREATE TABLE message_parents_new (
-        message_id TEXT NOT NULL,
-        parent_id TEXT NOT NULL,
-        PRIMARY KEY (message_id, parent_id),
-        FOREIGN KEY (message_id) REFERENCES messages(id)
-      );
-      INSERT INTO message_parents_new SELECT * FROM message_parents;
-      DROP TABLE message_parents;
-      ALTER TABLE message_parents_new RENAME TO message_parents;
-      CREATE INDEX IF NOT EXISTS idx_parents_parent ON message_parents(parent_id);
-    `);
+    const migrate = db.transaction(() => {
+      db.exec(`
+        CREATE TABLE message_parents_new (
+          message_id TEXT NOT NULL,
+          parent_id TEXT NOT NULL,
+          PRIMARY KEY (message_id, parent_id),
+          FOREIGN KEY (message_id) REFERENCES messages(id)
+        );
+        INSERT INTO message_parents_new SELECT * FROM message_parents;
+        DROP TABLE message_parents;
+        ALTER TABLE message_parents_new RENAME TO message_parents;
+        CREATE INDEX IF NOT EXISTS idx_parents_parent ON message_parents(parent_id);
+      `);
+    });
+    migrate();
     db.pragma("foreign_keys = ON");
   }
 }
