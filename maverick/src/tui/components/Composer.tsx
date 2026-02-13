@@ -43,9 +43,10 @@ export function Composer({
         return;
       }
 
-      // Only handle printable characters
+      // Only handle printable characters, with a length cap to prevent
+      // memory issues from large pastes (100KB matches MaverickMessage max text).
       if (input && !key.ctrl && !key.meta) {
-        setText((t) => t + input);
+        setText((t) => (t.length + input.length > 100_000 ? t : t + input));
       }
     },
     { isActive: active },

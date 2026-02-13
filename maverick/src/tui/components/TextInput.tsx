@@ -29,7 +29,10 @@ export function TextInput({
       }
 
       if (input && !key.ctrl && !key.meta && !key.return && !key.escape && !key.tab) {
-        onChange(value + input);
+        // Cap at 1000 chars for form fields (names, tokens, handles)
+        if (value.length + input.length <= 1000) {
+          onChange(value + input);
+        }
       }
     },
     { isActive: active },
