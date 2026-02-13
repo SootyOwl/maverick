@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -16,6 +16,7 @@ process.env.__MAVERICK_KEYS_DIR = TEST_DIR;
 
 // Now import AFTER setting the env var
 import { storeKey, getStoredKey, deleteKey } from "../src/storage/keys.js";
+import { getOrCreatePrivateKey, KeyDecryptionError } from "../src/identity/xmtp.js";
 
 describe("encrypted key storage", () => {
   const testHandle = "alice.bsky.social";
@@ -131,5 +132,51 @@ describe("encrypted key storage", () => {
     // Should still be retrievable with the same passphrase
     const retrievedAgain = await getStoredKey(testHandle, passphrase);
     expect(retrievedAgain).toBe(testKey);
+  });
+});
+
+describe("getOrCreatePrivateKey — key loss prevention", () => {
+  const handle = "keyloss-test.bsky.social";
+  const password = "original-password";
+
+  beforeEach(() => {
+    mkdirSync(TEST_DIR, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(TEST_DIR, { recursive: true, force: true });
+  });
+
+  it("creates a new key when no key file exists", async () => {
+    const key = await getOrCreatePrivateKey(handle, password);
+    expect(key).toMatch(/^0x[0-9a-f]{64}$/);
+  });
+
+  it("returns existing key with correct password", async () => {
+    const key1 = await getOrCreatePrivateKey(handle, password);
+    const key2 = await getOrCreatePrivateKey(handle, password);
+    expect(key2).toBe(key1);
+  });
+
+  it("throws KeyDecryptionError when key file exists but password is wrong", async () => {
+    // Store a key with the original password
+    await getOrCreatePrivateKey(handle, password);
+
+    // Try to retrieve with a different password — should throw, not silently generate new key
+    await expect(
+      getOrCreatePrivateKey(handle, "changed-password"),
+    ).rejects.toThrow(KeyDecryptionError);
+  });
+
+  it("error message mentions the handle", async () => {
+    await getOrCreatePrivateKey(handle, password);
+
+    try {
+      await getOrCreatePrivateKey(handle, "wrong-password");
+      expect.fail("Should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(KeyDecryptionError);
+      expect((err as Error).message).toContain(handle);
+    }
   });
 });

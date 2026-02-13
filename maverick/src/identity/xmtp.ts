@@ -28,6 +28,18 @@ export function createEOASigner(privateKey: `0x${string}`): Signer {
   };
 }
 
+export class KeyDecryptionError extends Error {
+  constructor(handle: string) {
+    super(
+      `Failed to decrypt XMTP private key for "${handle}". ` +
+      `This usually means your Bluesky app password changed since the key was stored. ` +
+      `If you changed your password, use your OLD password to recover your XMTP identity, ` +
+      `or delete ~/.maverick/keys/${handle.replace(/[^a-zA-Z0-9._-]/g, "_")}.key to generate a new identity (WARNING: this loses your existing XMTP inbox).`,
+    );
+    this.name = "KeyDecryptionError";
+  }
+}
+
 export async function getOrCreatePrivateKey(
   handle: string,
   passphrase: string,
@@ -36,6 +48,21 @@ export async function getOrCreatePrivateKey(
   if (stored) {
     return stored as `0x${string}`;
   }
+
+  // Check if a key file exists but couldn't be decrypted (wrong passphrase).
+  // This prevents silently generating a new key when the user changed their
+  // Bluesky app password, which would permanently lose their XMTP identity.
+  const { existsSync } = await import("node:fs");
+  const { join } = await import("node:path");
+  const { homedir } = await import("node:os");
+  const keysDir = process.env.__MAVERICK_KEYS_DIR ?? join(homedir(), ".maverick", "keys");
+  const safe = handle.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const keyFile = join(keysDir, `${safe}.key`);
+
+  if (existsSync(keyFile)) {
+    throw new KeyDecryptionError(handle);
+  }
+
   const key = generatePrivateKey();
   await storeKey(handle, key, passphrase);
   return key;
