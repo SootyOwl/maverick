@@ -8,7 +8,7 @@
     "dev": "tsx src/index.ts",
     "test": "vitest run",
     "build": "tsc",
-    "prepare": "pnpm build"
+    "prepare": "tsc"
   },
   "bin": {
     "maverick": "./bin/maverick.js"
