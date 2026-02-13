@@ -93,6 +93,14 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
 
       setStatus("success");
 
+      // Persist credentials in OS keychain for auto-login on next launch
+      try {
+        const { saveSession } = await import("../../storage/session.js");
+        saveSession(bsky.handle, p);
+      } catch {
+        // Non-fatal: keychain may be unavailable
+      }
+
       onLogin({
         xmtpClient,
         db,

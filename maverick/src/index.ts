@@ -24,6 +24,7 @@ import {
 import { sendMessage } from "./messaging/sender.js";
 import { MaverickMessageCodec, MaverickMessageContentType } from "./messaging/codec.js";
 import { insertMessage, insertParents } from "./storage/messages.js";
+import { saveSession, clearSession } from "./storage/session.js";
 import { sanitize } from "./utils/sanitize.js";
 import type { Client } from "@xmtp/node-sdk";
 import type { Config } from "./config.js";
@@ -61,7 +62,7 @@ program
     "Authenticate with Bluesky + create XMTP client + publish identity bridge",
   )
   .action(async () => {
-    const { bsky, xmtp } = await bootstrap();
+    const { config, bsky, xmtp } = await bootstrap();
 
     console.log(`Logged in as ${bsky.handle} (${bsky.did})`);
     console.log(`XMTP Inbox ID: ${xmtp.inboxId}`);
@@ -71,7 +72,31 @@ program
     await publishInboxRecord(bsky.agent, xmtp);
     console.log("Published org.xmtp.inbox record on PDS");
 
+    try {
+      saveSession(bsky.handle, config.bluesky.password);
+      console.log("Session saved to OS keychain");
+    } catch {
+      // Non-fatal: keychain may be unavailable
+    }
+
     console.log("\nLogin complete!");
+  });
+
+// ─── logout ──────────────────────────────────────────────────────────────
+
+program
+  .command("logout")
+  .description("Clear saved Bluesky credentials from the OS keychain")
+  .action(() => {
+    try {
+      clearSession();
+      console.log("Session cleared from OS keychain.");
+    } catch (err) {
+      console.error(
+        "Failed to clear session:",
+        err instanceof Error ? err.message : String(err),
+      );
+    }
   });
 
 // ─── whoami ───────────────────────────────────────────────────────────────

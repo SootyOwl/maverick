@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { config as loadDotenv } from "dotenv";
+import { loadSession } from "./storage/session.js";
 
 // Load .env file from project root (won't override existing env vars)
 loadDotenv({ quiet: true });
@@ -29,10 +30,26 @@ export function loadConfig(): Config {
   }
   const xmtpEnv = rawXmtpEnv;
 
+  // Precedence: env vars > OS keychain > empty
+  let handle = process.env.MAVERICK_BLUESKY_HANDLE ?? "";
+  let password = process.env.MAVERICK_BLUESKY_PASSWORD ?? "";
+
+  if (!handle || !password) {
+    try {
+      const session = loadSession();
+      if (session) {
+        handle = handle || session.handle;
+        password = password || session.password;
+      }
+    } catch {
+      // Keychain access can fail (no daemon, permissions) — fall back to empty
+    }
+  }
+
   return {
     bluesky: {
-      handle: process.env.MAVERICK_BLUESKY_HANDLE ?? "",
-      password: process.env.MAVERICK_BLUESKY_PASSWORD ?? "",
+      handle,
+      password,
       pdsUrl: process.env.MAVERICK_BLUESKY_PDS_URL ?? "https://bsky.social",
     },
     xmtp: {
