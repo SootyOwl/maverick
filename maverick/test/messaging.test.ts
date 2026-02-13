@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { MaverickMessageSchema } from "../src/messaging/types.js";
 import type { MaverickMessage } from "../src/messaging/types.js";
 import { MaverickMessageCodec } from "../src/messaging/codec.js";
+import { sanitize } from "../src/utils/sanitize.js";
 
 const codec = new MaverickMessageCodec();
 
@@ -168,5 +169,58 @@ describe("message schema bounds", () => {
       })),
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("sanitize", () => {
+  it("strips 7-bit C0 control characters except tab and newline", () => {
+    expect(sanitize("hello\x00world")).toBe("helloworld");
+    expect(sanitize("a\x01b\x02c")).toBe("abc");
+    expect(sanitize("a\x1fb")).toBe("ab");
+    expect(sanitize("a\x7fb")).toBe("ab");
+  });
+
+  it("preserves tab and newline", () => {
+    expect(sanitize("hello\tworld")).toBe("hello\tworld");
+    expect(sanitize("hello\nworld")).toBe("hello\nworld");
+  });
+
+  it("strips ANSI CSI escape sequences — ESC byte removed, sequence neutered", () => {
+    // The C0 character class matches \x1b first (left-to-right alternation),
+    // stripping the ESC byte and leaving "[31m" as harmless visible text.
+    // This is safe: without the leading ESC, terminals don't interpret it.
+    expect(sanitize("\x1b[31mred")).toBe("[31mred");
+    expect(sanitize("hello\x1b[31mred\x1b[0m")).toBe("hello[31mred[0m");
+  });
+
+  it("strips 8-bit C1 control characters (U+0080 to U+009F)", () => {
+    // \u009b = 8-bit CSI, \u009d = 8-bit OSC, \u0090 = DCS
+    expect(sanitize("hello\u009b31mworld")).toBe("hello31mworld");
+    expect(sanitize("a\u009db\u0090c")).toBe("abc");
+    expect(sanitize("a\u0080b\u008fc\u009fd")).toBe("abcd");
+  });
+
+  it("strips all C1 characters in the range", () => {
+    // Every character from U+0080 to U+009F should be stripped
+    let input = "";
+    for (let i = 0x80; i <= 0x9f; i++) {
+      input += String.fromCharCode(i);
+    }
+    expect(sanitize(input)).toBe("");
+  });
+
+  it("preserves normal Unicode text", () => {
+    expect(sanitize("Hello 世界! 🌍")).toBe("Hello 世界! 🌍");
+    expect(sanitize("café résumé naïve")).toBe("café résumé naïve");
+  });
+
+  it("strips OSC hyperlink sequence", () => {
+    // OSC hyperlink: \x1b]8;;url\x07text\x1b]8;;\x07
+    // \x1b is stripped by C0, and \x07 is stripped by C0, so the
+    // result is the remaining text fragments without the escape bytes
+    const input = "\x1b]8;;https://evil.com\x07click me\x1b]8;;\x07";
+    const result = sanitize(input);
+    // Should not contain any control characters
+    expect(result).not.toMatch(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/);
   });
 });
