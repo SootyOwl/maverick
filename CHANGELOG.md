@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fix env var loading + add integration tests with mocks (#2)
 
 ### Changed
+- Adversarial review: fix critical, high, and medium priority issues (#13)
 - Full-workflow TUI: login, community list, screen router (#12)
 - Polish TUI: multi-reply, cleanup, UX improvements (#11)
 - Implement full-MVP TUI (#10)
