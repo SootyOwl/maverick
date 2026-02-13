@@ -20,6 +20,7 @@ const NORMAL_HINTS: Array<[string, string]> = [
   ["r", "reply"],
   ["R", "multi"],
   ["G", "bottom"],
+  ["I", "invite"],
   ["N", "new ch"],
   ["q", "quit"],
 ];
