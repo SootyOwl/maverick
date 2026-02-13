@@ -1,11 +1,12 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(chainlink quick:*)",
+      "Bash(pnpm test:*)"
+    ]
+  },
   "enableAllProjectMcpServers": true,
   "enabledMcpjsonServers": [
     "chainlink-safe-fetch"
-  ],
-  "permissions": {
-    "allow": [
-      "Bash(chainlink quick:*)"
-    ]
-  }
+  ]
 }
