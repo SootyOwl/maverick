@@ -31,7 +31,11 @@ export function getVisibleMessages(
   channelId: string,
   limit = 100,
 ): VisibleMessage[] {
-  const raw = getChannelMessages(db, channelId, limit * 2); // Fetch extra to handle edits/deletes
+  // Fetch extra rows to account for edit/delete control messages that won't
+  // appear in the visible output. If >50% are edits/deletes, we may still
+  // get fewer than `limit` — but capping at 5x avoids unbounded DB reads.
+  const fetchLimit = Math.min(limit * 3, limit + 500);
+  const raw = getChannelMessages(db, channelId, fetchLimit);
 
   // Index messages by ID for sender verification
   const byId = new Map<string, StoredMessage>();
