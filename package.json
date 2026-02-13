@@ -7,11 +7,16 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "test": "vitest run",
-    "build": "tsc"
+    "build": "tsc",
+    "prepare": "pnpm build"
   },
   "bin": {
     "maverick": "./bin/maverick.js"
   },
+  "files": [
+    "bin",
+    "dist"
+  ],
   "keywords": [],
   "author": "",
   "license": "ISC",
