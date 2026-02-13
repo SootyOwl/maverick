@@ -1,20 +1,20 @@
 export const theme = {
-  // Background layers
-  bg: "#0a0e17",
-  surface: "#111827",
-  surfaceHover: "#1a2332",
-  overlay: "#0f172a",
+  // Background layers — kept subtle so they don't fight the terminal bg
+  bg: "",
+  surface: "#1e293b",
+  surfaceHover: "#334155",
+  overlay: "#1e293b",
 
-  // Borders
-  border: "#1e2d3d",
+  // Borders — bright enough to see on dark terminals
+  border: "#475569",
   borderFocus: "#3b82f6",
-  borderSubtle: "#162030",
+  borderSubtle: "#334155",
 
   // Text
   text: "#e2e8f0",
   textSecondary: "#94a3b8",
-  muted: "#64748b",
-  dim: "#475569",
+  muted: "#94a3b8",
+  dim: "#64748b",
 
   // Accent
   accent: "#3b82f6",
@@ -35,7 +35,7 @@ export const theme = {
   pink: "#f472b6",
 
   // Special
-  selection: "#1e3a5f",
+  selection: "#2d4a7a",
   highlight: "#2563eb",
 };
 
