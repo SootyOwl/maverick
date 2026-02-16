@@ -30,6 +30,13 @@ export interface KeyboardActions {
   onInvite?: () => void;
   /** Optional: Esc in normal mode (e.g. cancel pending reply) */
   onEscape?: () => void;
+  /** Optional: j/k in thread panel */
+  onThreadNavigateUp?: () => void;
+  onThreadNavigateDown?: () => void;
+  /** Optional: Enter when panel === "thread" — jump to message in main view */
+  onThreadSelect?: () => void;
+  /** Optional: r when panel === "thread" — reply to selected thread message */
+  onThreadReply?: () => void;
 }
 
 export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
@@ -60,6 +67,8 @@ export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
         if (input === "j" || key.downArrow) {
           if (panel === "channels") {
             actions.onChannelDown();
+          } else if (panel === "thread") {
+            actions.onThreadNavigateDown?.();
           } else {
             actions.onNavigateDown();
           }
@@ -69,6 +78,8 @@ export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
         if (input === "k" || key.upArrow) {
           if (panel === "channels") {
             actions.onChannelUp();
+          } else if (panel === "thread") {
+            actions.onThreadNavigateUp?.();
           } else {
             actions.onNavigateUp();
           }
@@ -90,12 +101,22 @@ export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
         }
 
         if (input === "i" || key.return) {
+          if (panel === "thread") {
+            actions.onThreadSelect?.();
+            return;
+          }
           setMode("insert");
           setPanel("messages");
           return;
         }
 
         if (input === "r") {
+          if (panel === "thread") {
+            actions.onThreadReply?.();
+            setMode("insert");
+            setPanel("messages");
+            return;
+          }
           actions.onReply();
           setMode("insert");
           setPanel("messages");
