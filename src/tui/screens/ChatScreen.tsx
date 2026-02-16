@@ -42,6 +42,26 @@ export function ChatScreen({
   const channelName = community.currentChannel?.name ?? "none";
   const communityName = community.state?.config?.name ?? "Loading...";
 
+  // Determine if the current user has admin+ role (owner or admin)
+  const userInboxId = session.xmtpClient?.inboxId;
+  const isAdmin = (() => {
+    if (!community.state || !userInboxId) return false;
+    // Check roles map (keyed by DID or inboxId)
+    for (const [key, role] of community.state.roles) {
+      if (key === userInboxId && (role === "owner" || role === "admin")) return true;
+    }
+    // Check roleInboxIds map (DID→inboxId mapping)
+    for (const [, inboxId] of community.state.roleInboxIds) {
+      if (inboxId === userInboxId) {
+        // Find the role for this DID
+        for (const [did, role] of community.state.roles) {
+          if (community.state.roleInboxIds.get(did) === inboxId && (role === "owner" || role === "admin")) return true;
+        }
+      }
+    }
+    return false;
+  })();
+
   const keyActions: KeyboardActions = useMemo(
     () => ({
       onNavigateUp: () => msgs.selectPrev(),
@@ -87,22 +107,26 @@ export function ChatScreen({
       onBack: () => {
         onBack();
       },
-      onNewChannel: () => {
-        onNavigate({
-          type: "channelCreate",
-          metaGroupId,
-          communityName,
-        });
-      },
-      onInvite: () => {
-        onNavigate({
-          type: "addMember",
-          metaGroupId,
-          communityName,
-        });
-      },
+      onNewChannel: isAdmin
+        ? () => {
+            onNavigate({
+              type: "channelCreate",
+              metaGroupId,
+              communityName,
+            });
+          }
+        : undefined,
+      onInvite: isAdmin
+        ? () => {
+            onNavigate({
+              type: "addMember",
+              metaGroupId,
+              communityName,
+            });
+          }
+        : undefined,
     }),
-    [msgs, community, threadCtx, metaGroupId, communityName, onBack, onNavigate],
+    [msgs, community, threadCtx, metaGroupId, communityName, onBack, onNavigate, isAdmin],
   );
 
   const keyboard = useKeyboard(keyActions);
@@ -176,6 +200,7 @@ export function ChatScreen({
       mode={keyboard.mode}
       panel={keyboard.panel}
       error={msgs.error ?? community.error}
+      isAdmin={isAdmin}
     />
   );
 }

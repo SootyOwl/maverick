@@ -11,18 +11,22 @@ interface StatusBarProps {
   panel: Panel;
   error: string | null;
   customHints?: string;
+  isAdmin?: boolean;
 }
 
-const NORMAL_HINTS: Array<[string, string]> = [
+const BASE_HINTS: Array<[string, string]> = [
   ["j/k", "nav"],
   ["h/l", "panel"],
   ["i", "compose"],
   ["r", "reply"],
   ["R", "multi"],
   ["G", "bottom"],
+  ["q", "quit"],
+];
+
+const ADMIN_HINTS: Array<[string, string]> = [
   ["I", "invite"],
   ["N", "new ch"],
-  ["q", "quit"],
 ];
 
 const INSERT_HINTS: Array<[string, string]> = [
@@ -37,9 +41,11 @@ export function StatusBar({
   panel,
   error,
   customHints,
+  isAdmin,
 }: StatusBarProps) {
   const isInsert = mode === "insert";
-  const hints = isInsert ? INSERT_HINTS : NORMAL_HINTS;
+  const normalHints = isAdmin ? [...BASE_HINTS, ...ADMIN_HINTS] : BASE_HINTS;
+  const hints = isInsert ? INSERT_HINTS : normalHints;
 
   return (
     <Box flexDirection="column">

@@ -41,6 +41,7 @@ interface LayoutProps {
   panel: Panel;
   error: string | null;
   customHints?: string;
+  isAdmin?: boolean;
 }
 
 export function Layout({
@@ -63,6 +64,7 @@ export function Layout({
   panel,
   error,
   customHints,
+  isAdmin,
 }: LayoutProps) {
   return (
     <Box flexDirection="column" flexGrow={1}>
@@ -111,6 +113,7 @@ export function Layout({
         panel={panel}
         error={error}
         customHints={customHints}
+        isAdmin={isAdmin}
       />
     </Box>
   );
