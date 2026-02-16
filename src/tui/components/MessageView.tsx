@@ -1,7 +1,9 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Box, Text, useStdout } from "ink";
 import { theme, sym } from "../theme.js";
+import { Spinner } from "./Spinner.js";
 import { Message } from "./Message.js";
+import { estimateMessageHeight } from "../utils.js";
 import type { VisibleMessage } from "../../messaging/dag.js";
 
 interface MessageViewProps {
@@ -10,22 +12,7 @@ interface MessageViewProps {
   channelName: string;
   focused: boolean;
   loading: boolean;
-}
-
-/** Animated loading spinner */
-function Spinner() {
-  const [frame, setFrame] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((f) => (f + 1) % sym.spinnerFrames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, []);
-
-  return (
-    <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>
-  );
+  availableRows: number;
 }
 
 export function MessageView({
@@ -34,10 +21,87 @@ export function MessageView({
   channelName,
   focused,
   loading,
+  availableRows,
 }: MessageViewProps) {
   const { stdout } = useStdout();
+  const termWidth = stdout.columns ?? 80;
   // Account for border (2 chars) + padding (2 chars) + channel list (~26) + separators (~2)
-  const separatorWidth = Math.max(10, (stdout.columns ?? 80) - 34);
+  const separatorWidth = Math.max(10, termWidth - 34);
+
+  const [scrollOffset, setScrollOffset] = useState(0);
+
+  // Reset scroll when channel changes
+  const [prevChannel, setPrevChannel] = useState(channelName);
+  if (channelName !== prevChannel) {
+    setPrevChannel(channelName);
+    setScrollOffset(0);
+  }
+
+  // Compute which messages fit in the viewport
+  const { startIdx, endIdx } = useMemo(() => {
+    if (messages.length === 0) return { startIdx: 0, endIdx: 0 };
+
+    // Estimate message body width for height calculation
+    const bodyWidth = Math.max(20, termWidth - 40);
+
+    // First, ensure selectedIndex is visible by adjusting scrollOffset
+    let start = scrollOffset;
+
+    // If selected is before the viewport, scroll up to it
+    if (selectedIndex < start) {
+      start = selectedIndex;
+    }
+
+    // Find how many messages fit starting from `start`
+    let rowsUsed = 0;
+    let end = start;
+    for (let i = start; i < messages.length; i++) {
+      const msg = messages[i];
+      const h = estimateMessageHeight(
+        msg.text.length,
+        msg.parentIds.length > 0,
+        bodyWidth,
+      );
+      if (rowsUsed + h > availableRows && i > start) break;
+      rowsUsed += h;
+      end = i + 1;
+    }
+
+    // If selected is after the viewport, scroll down
+    if (selectedIndex >= end) {
+      // Work backwards from selectedIndex to fit window
+      let rows = 0;
+      end = selectedIndex + 1;
+      start = selectedIndex;
+      for (let i = selectedIndex; i >= 0; i--) {
+        const msg = messages[i];
+        const h = estimateMessageHeight(
+          msg.text.length,
+          msg.parentIds.length > 0,
+          bodyWidth,
+        );
+        if (rows + h > availableRows && i < selectedIndex) break;
+        rows += h;
+        start = i;
+      }
+    }
+
+    return { startIdx: start, endIdx: end };
+  }, [messages, selectedIndex, scrollOffset, availableRows, termWidth]);
+
+  // Sync scrollOffset state with computed start
+  useEffect(() => {
+    setScrollOffset(startIdx);
+  }, [startIdx]);
+
+  const aboveCount = startIdx;
+  const belowCount = messages.length - endIdx;
+  const visibleMessages = messages.slice(startIdx, endIdx);
+
+  // Position indicator for header
+  const positionHint = messages.length > 0
+    ? `${startIdx + 1}-${endIdx}/${messages.length}`
+    : "";
 
   return (
     <Box
@@ -60,7 +124,7 @@ export function MessageView({
           )}
         </Box>
         <Text color={theme.dim}>
-          {messages.length > 0 ? `${messages.length} msgs` : ""}
+          {positionHint}
         </Text>
       </Box>
 
@@ -69,6 +133,15 @@ export function MessageView({
           {"─".repeat(separatorWidth)}
         </Text>
       </Box>
+
+      {/* Scroll-up indicator */}
+      {aboveCount > 0 && (
+        <Box paddingX={2}>
+          <Text color={theme.dim}>
+            {sym.chevronDown} {aboveCount} more above
+          </Text>
+        </Box>
+      )}
 
       {/* Messages */}
       <Box flexDirection="column" flexGrow={1} paddingBottom={1}>
@@ -84,9 +157,11 @@ export function MessageView({
             </Box>
           </Box>
         )}
-        {messages.map((msg, i) => {
+        {visibleMessages.map((msg, i) => {
+          const globalIdx = startIdx + i;
           // Group consecutive messages from the same sender
-          const prevMsg = i > 0 ? messages[i - 1] : null;
+          // At viewport boundary (i===0), check against actual previous message
+          const prevMsg = globalIdx > 0 ? messages[globalIdx - 1] : null;
           const sameSender =
             prevMsg !== null &&
             prevMsg.senderInboxId === msg.senderInboxId &&
@@ -97,12 +172,21 @@ export function MessageView({
             <Message
               key={msg.id}
               message={msg}
-              selected={i === selectedIndex}
+              selected={globalIdx === selectedIndex}
               compact={sameSender}
             />
           );
         })}
       </Box>
+
+      {/* Scroll-down indicator */}
+      {belowCount > 0 && (
+        <Box paddingX={2}>
+          <Text color={theme.dim}>
+            {sym.chevronDown} {belowCount} more below
+          </Text>
+        </Box>
+      )}
     </Box>
   );
 }
