@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { ChannelList } from "./ChannelList.js";
 import { MessageView } from "./MessageView.js";
 import { ThreadLines } from "./ThreadLines.js";
@@ -66,8 +66,24 @@ export function Layout({
   customHints,
   isAdmin,
 }: LayoutProps) {
+  const { stdout } = useStdout();
+  const termHeight = stdout.rows ?? 24;
+
+  // Compute fixed chrome heights:
+  // Composer: 3 lines (border top + content + border bottom), +1 if reply indicator shown
+  // StatusBar: 2-3 lines (error? + status line + hints)
+  // ReplySelector: 0 if empty, else 2 + replyTargets.length (border + header + items + border)
+  // MessageView internal chrome: 4 lines (border top + header + separator + border bottom + paddingBottom)
+  const composerHeight = 3 + (replyToIds.length > 0 ? 1 : 0);
+  const statusBarHeight = 2 + (error ? 1 : 0);
+  const replySelectorHeight = replyTargets.length > 0 ? 2 + replyTargets.length + 2 : 0;
+  const messageViewChrome = 5; // border(2) + header(1) + separator(1) + paddingBottom(1)
+
+  const chromeTotal = composerHeight + statusBarHeight + replySelectorHeight + messageViewChrome;
+  const availableRows = Math.max(3, termHeight - chromeTotal);
+
   return (
-    <Box flexDirection="column" flexGrow={1}>
+    <Box flexDirection="column" height={termHeight}>
       {/* Main three-panel layout */}
       <Box flexDirection="row" flexGrow={1}>
         <ChannelList
@@ -86,6 +102,7 @@ export function Layout({
           channelName={channelName}
           focused={panel === "messages"}
           loading={loading}
+          availableRows={availableRows}
         />
         <Box width={1}>
           <Text color={theme.borderSubtle}> </Text>
