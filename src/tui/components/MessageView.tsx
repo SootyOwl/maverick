@@ -3,7 +3,11 @@ import { Box, Text, useStdout } from "ink";
 import { theme, sym } from "../theme.js";
 import { Spinner } from "./Spinner.js";
 import { Message } from "./Message.js";
-import { estimateMessageHeight } from "../utils.js";
+import {
+  formatMessage,
+  getPanelMetrics,
+  type FormattedMessage,
+} from "../utils.js";
 import type { VisibleMessage } from "../../messaging/dag.js";
 
 interface MessageViewProps {
@@ -12,7 +16,7 @@ interface MessageViewProps {
   channelName: string;
   focused: boolean;
   loading: boolean;
-  availableRows: number;
+  availableRows?: number;
 }
 
 export function MessageView({
@@ -25,8 +29,9 @@ export function MessageView({
 }: MessageViewProps) {
   const { stdout } = useStdout();
   const termWidth = stdout.columns ?? 80;
-  // Account for border (2 chars) + padding (2 chars) + channel list (~26) + separators (~2)
   const separatorWidth = Math.max(10, termWidth - 34);
+  const metrics = getPanelMetrics(termWidth);
+  const effectiveRows = availableRows ?? 100;
 
   const [scrollOffset, setScrollOffset] = useState(0);
 
@@ -37,71 +42,88 @@ export function MessageView({
     setScrollOffset(0);
   }
 
-  // Compute which messages fit in the viewport
+  // Step 1: Compute exact line heights for all messages (selection doesn't affect height)
+  const allHeights = useMemo(() => {
+    return messages.map((msg, i) => {
+      const prevMsg = i > 0 ? messages[i - 1] : null;
+      const sameSender =
+        prevMsg !== null &&
+        prevMsg.senderInboxId === msg.senderInboxId &&
+        msg.createdAt - prevMsg.createdAt < 300_000 &&
+        msg.parentIds.length === 0;
+
+      return formatMessage(msg, metrics, { selected: false, compact: sameSender }).lines.length;
+    });
+  }, [messages, metrics]);
+
+  // Step 2: Viewport bounds using exact heights
   const { startIdx, endIdx } = useMemo(() => {
     if (messages.length === 0) return { startIdx: 0, endIdx: 0 };
 
-    // Estimate message body width for height calculation
-    const bodyWidth = Math.max(20, termWidth - 40);
-
-    // First, ensure selectedIndex is visible by adjusting scrollOffset
     let start = scrollOffset;
+    if (selectedIndex < start) start = selectedIndex;
 
-    // If selected is before the viewport, scroll up to it
-    if (selectedIndex < start) {
-      start = selectedIndex;
-    }
-
-    // Find how many messages fit starting from `start`
+    // Forward pass: fill viewport from start
     let rowsUsed = 0;
     let end = start;
     for (let i = start; i < messages.length; i++) {
-      const msg = messages[i];
-      const h = estimateMessageHeight(
-        msg.text.length,
-        msg.parentIds.length > 0,
-        bodyWidth,
-      );
-      if (rowsUsed + h > availableRows && i > start) break;
+      const h = allHeights[i];
+      if (rowsUsed + h > effectiveRows && i > start) break;
       rowsUsed += h;
       end = i + 1;
     }
 
-    // If selected is after the viewport, scroll down
+    // If selected is past viewport, scroll down
     if (selectedIndex >= end) {
-      // Work backwards from selectedIndex to fit window
       let rows = 0;
       end = selectedIndex + 1;
       start = selectedIndex;
       for (let i = selectedIndex; i >= 0; i--) {
-        const msg = messages[i];
-        const h = estimateMessageHeight(
-          msg.text.length,
-          msg.parentIds.length > 0,
-          bodyWidth,
-        );
-        if (rows + h > availableRows && i < selectedIndex) break;
+        const h = allHeights[i];
+        if (rows + h > effectiveRows && i < selectedIndex) break;
         rows += h;
         start = i;
       }
     }
 
     return { startIdx: start, endIdx: end };
-  }, [messages, selectedIndex, scrollOffset, availableRows, termWidth]);
+  }, [messages, allHeights, selectedIndex, scrollOffset, effectiveRows]);
 
-  // Sync scrollOffset state with computed start
+  // Sync scrollOffset state
   useEffect(() => {
     setScrollOffset(startIdx);
   }, [startIdx]);
 
+  // Step 3: Format only visible messages with correct selection + sameSender
+  const visibleFormatted = useMemo(() => {
+    const result: FormattedMessage[] = [];
+    for (let gi = startIdx; gi < endIdx; gi++) {
+      const msg = messages[gi];
+      const localIdx = gi - startIdx;
+      const prevMsg = gi > 0 ? messages[gi - 1] : null;
+      const prevIsVisible = localIdx > 0;
+      const sameSender =
+        prevIsVisible &&
+        prevMsg !== null &&
+        prevMsg.senderInboxId === msg.senderInboxId &&
+        msg.createdAt - prevMsg.createdAt < 300_000 &&
+        msg.parentIds.length === 0;
+
+      result.push(
+        formatMessage(msg, metrics, {
+          selected: gi === selectedIndex,
+          compact: sameSender,
+        }),
+      );
+    }
+    return result;
+  }, [messages, startIdx, endIdx, selectedIndex, metrics]);
+
   const aboveCount = startIdx;
   const belowCount = messages.length - endIdx;
-  const visibleMessages = messages.slice(startIdx, endIdx);
 
-  // Position indicator for header
-  const positionHint = messages.length > 0
-    ? `${startIdx + 1}-${endIdx}/${messages.length}`
-    : "";
+  const positionHint =
+    messages.length > 0 ? `${startIdx + 1}-${endIdx}/${messages.length}` : "";
 
   return (
     <Box
@@ -123,15 +145,11 @@ export function MessageView({
             </Box>
           )}
         </Box>
-        <Text color={theme.dim}>
-          {positionHint}
-        </Text>
+        <Text color={theme.dim}>{positionHint}</Text>
       </Box>
 
       <Box paddingX={1}>
-        <Text color={theme.borderSubtle}>
-          {"─".repeat(separatorWidth)}
-        </Text>
+        <Text color={theme.borderSubtle}>{"─".repeat(separatorWidth)}</Text>
       </Box>
 
       {/* Scroll-up indicator */}
@@ -148,7 +166,10 @@ export function MessageView({
         {messages.length === 0 && !loading && (
           <Box paddingX={2} paddingY={1} flexDirection="column">
             <Text color={theme.muted}>
-              This is the beginning of <Text bold color={theme.channels}>{sym.hash}{channelName}</Text>
+              This is the beginning of{" "}
+              <Text bold color={theme.channels}>
+                {sym.hash}{channelName}
+              </Text>
             </Text>
             <Box marginTop={1}>
               <Text color={theme.dim}>
@@ -157,28 +178,13 @@ export function MessageView({
             </Box>
           </Box>
         )}
-        {visibleMessages.map((msg, i) => {
-          const globalIdx = startIdx + i;
-          // Group consecutive messages from the same sender.
-          // First visible message always shows sender when prior messages are off-screen.
-          const prevMsg = globalIdx > 0 ? messages[globalIdx - 1] : null;
-          const prevIsVisible = i > 0;
-          const sameSender =
-            prevIsVisible &&
-            prevMsg !== null &&
-            prevMsg.senderInboxId === msg.senderInboxId &&
-            msg.createdAt - prevMsg.createdAt < 300_000 && // within 5 min
-            msg.parentIds.length === 0; // not a reply
-
-          return (
-            <Message
-              key={msg.id}
-              message={msg}
-              selected={globalIdx === selectedIndex}
-              compact={sameSender}
-            />
-          );
-        })}
+        {visibleFormatted.map((fm, i) => (
+          <Message
+            key={fm.messageId}
+            lines={fm.lines}
+            selected={startIdx + i === selectedIndex}
+          />
+        ))}
       </Box>
 
       {/* Scroll-down indicator */}
