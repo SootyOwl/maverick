@@ -1,7 +1,8 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { theme, sym } from "../theme.js";
 import { sanitize } from "../../utils/sanitize.js";
+import { formatTime, truncate } from "../utils.js";
 import type { ThreadContext } from "../../messaging/dag.js";
 
 interface ThreadLinesProps {
@@ -9,26 +10,23 @@ interface ThreadLinesProps {
   focused: boolean;
 }
 
-function formatTime(ts: number): string {
-  const d = new Date(ts);
-  return d.toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-}
-
-function truncate(s: string, max: number): string {
-  return s.length > max ? s.slice(0, max - 1) + sym.ellipsis : s;
-}
-
 export function ThreadLines({ thread, focused }: ThreadLinesProps) {
+  const { stdout } = useStdout();
+  const cols = stdout.columns ?? 80;
+  // Thread panel: ~20% of width, clamped to 20–34
+  const panelWidth = Math.max(20, Math.min(34, Math.floor(cols * 0.2)));
+  // Derive truncation lengths from panel width (account for border + padding)
+  const innerWidth = panelWidth - 4;
+  const senderMax = Math.max(6, Math.floor(innerWidth * 0.45));
+  const textMax = Math.max(8, innerWidth - 3);
+  const currentTextMax = Math.max(10, innerWidth - 2);
+
   const hasAncestors = thread && thread.ancestors.length > 0;
 
   return (
     <Box
       flexDirection="column"
-      width={30}
+      width={panelWidth}
       borderStyle="round"
       borderColor={focused ? theme.accent : theme.border}
     >
@@ -46,7 +44,7 @@ export function ThreadLines({ thread, focused }: ThreadLinesProps) {
 
       <Box paddingX={1}>
         <Text color={theme.borderSubtle}>
-          {"─".repeat(26)}
+          {"─".repeat(Math.max(4, innerWidth))}
         </Text>
       </Box>
 
@@ -80,12 +78,12 @@ export function ThreadLines({ thread, focused }: ThreadLinesProps) {
                     {sym.treeHoriz}{" "}
                   </Text>
                   <Text color={theme.muted}>
-                    {truncate(sender, 12)}
+                    {truncate(sender, senderMax)}
                   </Text>
                 </Box>
                 <Box flexDirection="row" paddingLeft={3}>
                   <Text color={theme.dim} dimColor>
-                    {truncate(sanitize(msg.text), 22)}
+                    {truncate(sanitize(msg.text), textMax)}
                   </Text>
                 </Box>
               </Box>
@@ -102,7 +100,7 @@ export function ThreadLines({ thread, focused }: ThreadLinesProps) {
                 {truncate(
                   sanitize(thread.message.sender_handle ??
                     thread.message.sender_inbox_id.slice(0, 8)),
-                  12,
+                  senderMax,
                 )}
               </Text>
               <Text color={theme.dim}>
@@ -111,7 +109,7 @@ export function ThreadLines({ thread, focused }: ThreadLinesProps) {
             </Box>
             <Box flexDirection="row" paddingLeft={2}>
               <Text color={theme.text}>
-                {truncate(sanitize(thread.message.text), 24)}
+                {truncate(sanitize(thread.message.text), currentTextMax)}
               </Text>
             </Box>
           </Box>
@@ -128,12 +126,12 @@ export function ThreadLines({ thread, focused }: ThreadLinesProps) {
                     {sym.treeHoriz}{" "}
                   </Text>
                   <Text color={theme.channels}>
-                    {truncate(sender, 12)}
+                    {truncate(sender, senderMax)}
                   </Text>
                 </Box>
                 <Box flexDirection="row" paddingLeft={3}>
                   <Text color={theme.textSecondary}>
-                    {truncate(sanitize(msg.text), 22)}
+                    {truncate(sanitize(msg.text), textMax)}
                   </Text>
                 </Box>
               </Box>
