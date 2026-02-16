@@ -10,6 +10,7 @@ import { theme } from "../theme.js";
 import type { ChannelState } from "../../community/state.js";
 import type { VisibleMessage } from "../../messaging/dag.js";
 import type { ThreadContext } from "../../messaging/dag.js";
+import type { StoredMessage } from "../../storage/messages.js";
 import type { Panel, Mode } from "../hooks/useKeyboard.js";
 
 interface LayoutProps {
@@ -27,6 +28,9 @@ interface LayoutProps {
 
   // Thread
   thread: ThreadContext | null;
+  threadFlatMessages?: StoredMessage[];
+  threadSelectedIndex?: number;
+  threadFocusedIndex?: number;
 
   // Composer
   composerActive: boolean;
@@ -54,6 +58,9 @@ export function Layout({
   channelName,
   loading,
   thread,
+  threadFlatMessages,
+  threadSelectedIndex,
+  threadFocusedIndex,
   composerActive,
   replyToIds,
   replyTargets,
@@ -107,7 +114,13 @@ export function Layout({
         <Box width={1}>
           <Text color={theme.borderSubtle}> </Text>
         </Box>
-        <ThreadLines thread={thread} focused={panel === "thread"} />
+        <ThreadLines
+          thread={thread}
+          focused={panel === "thread"}
+          flatMessages={threadFlatMessages}
+          selectedIndex={threadSelectedIndex}
+          focusedMessageIndex={threadFocusedIndex}
+        />
       </Box>
 
       {/* Reply selector */}
