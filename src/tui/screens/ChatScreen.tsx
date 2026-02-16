@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { Box, Text } from "ink";
 import { theme, sym } from "../theme.js";
 import { Layout } from "../components/Layout.js";
+import { Spinner } from "../components/Spinner.js";
 import { useCommunity } from "../hooks/useCommunity.js";
 import { useMessages } from "../hooks/useMessages.js";
 import { useKeyboard, type KeyboardActions } from "../hooks/useKeyboard.js";
@@ -13,17 +14,6 @@ interface ChatScreenProps {
   metaGroupId: string;
   onNavigate: (screen: Screen) => void;
   onBack: () => void;
-}
-
-function Spinner() {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((f) => (f + 1) % sym.spinnerFrames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, []);
-  return <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>;
 }
 
 export function ChatScreen({
