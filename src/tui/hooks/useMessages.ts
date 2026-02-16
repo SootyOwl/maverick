@@ -15,6 +15,7 @@ export interface UseMessagesResult {
   selectNext: () => void;
   selectPrev: () => void;
   selectLast: () => void;
+  selectIndex: (idx: number) => void;
   send: (text: string, replyTo?: string[]) => Promise<void>;
   loading: boolean;
   error: string | null;
@@ -182,6 +183,10 @@ export function useMessages(
     setSelectedIndex(messages.length > 0 ? messages.length - 1 : -1);
   }, [messages.length]);
 
+  const selectIndex = useCallback((idx: number) => {
+    setSelectedIndex(Math.max(0, Math.min(idx, messages.length - 1)));
+  }, [messages.length]);
+
   const selectedMessage =
     selectedIndex >= 0 && selectedIndex < messages.length
       ? messages[selectedIndex]
@@ -194,6 +199,7 @@ export function useMessages(
     selectNext,
     selectPrev,
     selectLast,
+    selectIndex,
     send,
     loading,
     error,
