@@ -1,6 +1,7 @@
 import { theme, sym } from "./theme.js";
 import { sanitize } from "../utils/sanitize.js";
 import type { VisibleMessage } from "../messaging/dag.js";
+import type { StoredMessage } from "../storage/messages.js";
 
 // ── Shared helpers ──────────────────────────────────────────────────────
 
@@ -165,6 +166,112 @@ export function formatMessage(
       spans.push({ text: " (edited)", color: theme.yellowDim, dimColor: true });
     } else {
       spans.push({ text: bodyLines[i], color: selected ? theme.text : theme.textSecondary });
+    }
+    lines.push({ spans });
+  }
+
+  return { lines, messageId: msg.id };
+}
+
+// ── Thread panel formatting ────────────────────────────────────────────
+
+export interface ThreadPanelMetrics {
+  innerWidth: number;   // panelWidth - 4
+  senderMax: number;    // max chars for sender
+  textWidth: number;    // max chars for body lines
+}
+
+export interface FormattedThreadMessage {
+  lines: FormattedLine[];
+  messageId: string;
+}
+
+export function getThreadPanelMetrics(panelWidth: number): ThreadPanelMetrics {
+  const innerWidth = panelWidth - 4;
+  const senderMax = Math.max(6, Math.floor(innerWidth * 0.45));
+  const textWidth = Math.max(8, innerWidth - 4); // 4 = tree prefix width ("├─ " or "● ")
+  return { innerWidth, senderMax, textWidth };
+}
+
+export function formatThreadMessage(
+  msg: StoredMessage,
+  metrics: ThreadPanelMetrics,
+  opts: {
+    selected: boolean;
+    position: "ancestor" | "current" | "descendant";
+    isLast: boolean;
+    totalAncestors: number;
+  },
+): FormattedThreadMessage {
+  const lines: FormattedLine[] = [];
+  const { selected, position, isLast } = opts;
+
+  // Selection indicator
+  const indicator = selected ? sym.bar + " " : "  ";
+  const indicatorColor = selected ? theme.accent : undefined;
+
+  // Tree prefix based on position
+  let treePrefix: string;
+  let treePrefixColor: string;
+  if (position === "ancestor") {
+    treePrefix = (isLast ? sym.treeBranch : sym.treeVert) + sym.treeHoriz + " ";
+    treePrefixColor = theme.dim;
+  } else if (position === "current") {
+    treePrefix = sym.dot + " ";
+    treePrefixColor = theme.accent;
+  } else {
+    treePrefix = (isLast ? sym.treeEnd : sym.treeBranch) + sym.treeHoriz + " ";
+    treePrefixColor = theme.channelDim;
+  }
+
+  // Sender + timestamp
+  const rawSender = msg.sender_handle ?? msg.sender_inbox_id.slice(0, 8);
+  const senderDisplay = sanitize(truncate(rawSender, metrics.senderMax));
+  const time = formatTime(msg.created_at);
+
+  // Colors based on position
+  let senderColor: string;
+  let textColor: string;
+  if (position === "current") {
+    senderColor = theme.accentBright;
+    textColor = theme.text;
+  } else if (position === "descendant") {
+    senderColor = theme.channels;
+    textColor = theme.textSecondary;
+  } else {
+    senderColor = theme.muted;
+    textColor = theme.dim;
+  }
+
+  // If selected, brighten text
+  if (selected) {
+    textColor = theme.text;
+  }
+
+  // Header line: indicator + tree prefix + sender + timestamp
+  lines.push({
+    spans: [
+      { text: indicator, color: indicatorColor },
+      { text: treePrefix, color: treePrefixColor },
+      { text: senderDisplay, color: senderColor, bold: position === "current" },
+      { text: " " + time, color: theme.dim },
+    ],
+  });
+
+  // Word-wrapped body lines indented under tree prefix
+  const bodyRaw = msg.text.length > 300 ? msg.text.slice(0, 297) + "..." : msg.text;
+  const bodyText = sanitize(bodyRaw);
+  const bodyLines = wordWrap(bodyText, metrics.textWidth);
+
+  // Indent: indicator (2) + tree prefix area (3 for "  " continuation indent)
+  const bodyIndent = "  " + "   ";
+
+  for (let i = 0; i < bodyLines.length; i++) {
+    const isLastLine = i === bodyLines.length - 1;
+    const spans: TextSpan[] = [{ text: bodyIndent }];
+    spans.push({ text: bodyLines[i], color: textColor });
+    if (msg.edit_of && isLastLine) {
+      spans.push({ text: " (edited)", color: theme.yellowDim, dimColor: true });
     }
     lines.push({ spans });
   }
