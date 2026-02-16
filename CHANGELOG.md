@@ -13,13 +13,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fix critical and high priority issues found in adversarial review (#4)
 
 ### Added
+- Add JSON-aware config merge script for host Claude config layering (#18)
+- Mount local ~/.claude config into devcontainer as bind mount (#17)
 - Implement Tasks 8-11: Community Manager, Messaging, Invites, CLI (#1)
 
 ### Fixed
+- Fix TUI theme colors for dark terminal readability (#15)
 - Register custom codecs when creating XMTP client (#3)
 - Fix env var loading + add integration tests with mocks (#2)
 
 ### Changed
+- Write README.md for the project (#16)
+- Move maverick/ subdirectory to repo root for npm git install support (#14)
 - Adversarial review: fix critical, high, and medium priority issues (#13)
 - Full-workflow TUI: login, community list, screen router (#12)
 - Polish TUI: multi-reply, cleanup, UX improvements (#11)
