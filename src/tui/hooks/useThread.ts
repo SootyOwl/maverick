@@ -9,6 +9,8 @@ export interface UseThreadResult {
   flatMessages: StoredMessage[];
   selectedIndex: number;
   selectedMessage: StoredMessage | null;
+  parentMap: Map<string, string[]>;
+  siblingParentIds: Set<string>;
   openThread: (messageId: string) => void;
   closeThread: () => void;
   selectPrev: () => void;
@@ -41,6 +43,51 @@ export function useThread(db: Database.Database): UseThreadResult {
   const flatMessages = useMemo<StoredMessage[]>(() => {
     if (!thread) return [];
     return [...thread.ancestors, thread.message, ...thread.descendants];
+  }, [thread]);
+
+  const parentMap = useMemo<Map<string, string[]>>(() => {
+    return thread?.parentMap ?? new Map();
+  }, [thread]);
+
+  // Compute siblingParentIds: messages in descendants that are NOT reachable
+  // by walking down from the focus message through the parentMap's inverse
+  const siblingParentIds = useMemo<Set<string>>(() => {
+    if (!thread || !thread.parentMap) return new Set();
+
+    const focusId = thread.message.id;
+
+    // Build childMap (inverse of parentMap): parentId → childIds
+    const childMap = new Map<string, string[]>();
+    for (const [childId, pids] of thread.parentMap) {
+      for (const pid of pids) {
+        const existing = childMap.get(pid);
+        if (existing) {
+          existing.push(childId);
+        } else {
+          childMap.set(pid, [childId]);
+        }
+      }
+    }
+
+    // BFS down from focus through childMap to find true descendants
+    const trueDescendants = new Set<string>();
+    const queue = childMap.get(focusId) ?? [];
+    while (queue.length > 0) {
+      const id = queue.shift()!;
+      if (trueDescendants.has(id)) continue;
+      trueDescendants.add(id);
+      const children = childMap.get(id) ?? [];
+      queue.push(...children);
+    }
+
+    // Any descendant not reachable = sibling parent
+    const siblings = new Set<string>();
+    for (const desc of thread.descendants) {
+      if (!trueDescendants.has(desc.id)) {
+        siblings.add(desc.id);
+      }
+    }
+    return siblings;
   }, [thread]);
 
   const selectedMessage = useMemo(() => {
@@ -83,6 +130,8 @@ export function useThread(db: Database.Database): UseThreadResult {
     flatMessages,
     selectedIndex,
     selectedMessage,
+    parentMap,
+    siblingParentIds,
     openThread,
     closeThread,
     selectPrev,

@@ -24,6 +24,7 @@ export interface ThreadContext {
   ancestors: StoredMessage[];
   message: StoredMessage;
   descendants: StoredMessage[];
+  parentMap?: Map<string, string[]>; // messageId → parentIds within this thread
 }
 
 export function getVisibleMessages(
@@ -135,7 +136,8 @@ export function getThreadContext(
   }
   ancestors.sort((a, b) => a.created_at - b.created_at);
 
-  // Collect descendants by walking down children (bounded)
+  // Collect descendants by walking down children (bounded),
+  // also discovering sibling parents of multi-parent descendants
   const descendants: StoredMessage[] = [];
   const visitedDown = new Set<string>();
   const childQueue = getMessageChildren(db, messageId).map((c) => c.id);
@@ -150,11 +152,42 @@ export function getThreadContext(
       .get(childId) as StoredMessage | undefined;
     if (child) {
       descendants.push(child);
+
+      // Enqueue this child's children for further traversal
       const grandchildren = getMessageChildren(db, childId);
       childQueue.push(...grandchildren.map((c) => c.id));
+
+      // Discover sibling parents: if this child has other parents not yet
+      // in the thread, add them as descendants but do NOT enqueue their
+      // children (prevents expanding unrelated subgraphs)
+      const childParentIds = getParentIds(db, childId);
+      for (const pid of childParentIds) {
+        if (pid === messageId || visited.has(pid) || visitedDown.has(pid)) continue;
+        visitedDown.add(pid);
+        const siblingParent = db
+          .prepare(`SELECT * FROM messages WHERE id = ?`)
+          .get(pid) as StoredMessage | undefined;
+        if (siblingParent) {
+          descendants.push(siblingParent);
+          // Intentionally NOT enqueuing siblingParent's children
+        }
+      }
     }
   }
   descendants.sort((a, b) => a.created_at - b.created_at);
 
-  return { ancestors, message: msg, descendants };
+  // Build parentMap: for every message in the thread, record which of its
+  // parents are also present in the thread
+  const allThreadIds = new Set<string>(
+    [msg, ...ancestors, ...descendants].map((m) => m.id),
+  );
+  const parentMap = new Map<string, string[]>();
+  for (const id of allThreadIds) {
+    const pids = getParentIds(db, id).filter((pid) => allThreadIds.has(pid));
+    if (pids.length > 0) {
+      parentMap.set(id, pids);
+    }
+  }
+
+  return { ancestors, message: msg, descendants, parentMap };
 }

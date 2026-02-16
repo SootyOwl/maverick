@@ -211,6 +211,8 @@ export function ChatScreen({
       threadFlatMessages={threadCtx.flatMessages}
       threadSelectedIndex={threadCtx.selectedIndex}
       threadFocusedIndex={threadCtx.thread ? threadCtx.thread.ancestors.length : -1}
+      threadParentMap={threadCtx.parentMap}
+      threadSiblingParentIds={threadCtx.siblingParentIds}
       composerActive={keyboard.mode === "insert"}
       replyToIds={replyToIds}
       replyTargets={replyTargets}

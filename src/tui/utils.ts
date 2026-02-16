@@ -198,7 +198,7 @@ export function formatThreadMessage(
   metrics: ThreadPanelMetrics,
   opts: {
     selected: boolean;
-    position: "ancestor" | "current" | "descendant";
+    position: "ancestor" | "direct-parent" | "current" | "descendant" | "sibling-parent";
     isLast: boolean;
     totalAncestors: number;
   },
@@ -216,9 +216,15 @@ export function formatThreadMessage(
   if (position === "ancestor") {
     treePrefix = (isLast ? sym.treeBranch : sym.treeVert) + sym.treeHoriz + " ";
     treePrefixColor = theme.dim;
+  } else if (position === "direct-parent") {
+    treePrefix = (isLast ? sym.treeBranch : sym.treeVert) + sym.treeHoriz + " ";
+    treePrefixColor = theme.accentDim;
   } else if (position === "current") {
     treePrefix = sym.dot + " ";
     treePrefixColor = theme.accent;
+  } else if (position === "sibling-parent") {
+    treePrefix = sym.treeCorner + " ";
+    treePrefixColor = theme.purple;
   } else {
     treePrefix = (isLast ? sym.treeEnd : sym.treeBranch) + sym.treeHoriz + " ";
     treePrefixColor = theme.channelDim;
@@ -238,6 +244,12 @@ export function formatThreadMessage(
   } else if (position === "descendant") {
     senderColor = theme.channels;
     textColor = theme.textSecondary;
+  } else if (position === "direct-parent") {
+    senderColor = theme.textSecondary;
+    textColor = theme.textSecondary;
+  } else if (position === "sibling-parent") {
+    senderColor = theme.purple;
+    textColor = theme.dim;
   } else {
     senderColor = theme.muted;
     textColor = theme.dim;

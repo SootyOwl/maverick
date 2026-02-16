@@ -16,6 +16,8 @@ interface ThreadLinesProps {
   flatMessages?: StoredMessage[];
   selectedIndex?: number;
   focusedMessageIndex?: number;
+  parentMap?: Map<string, string[]>;
+  siblingParentIds?: Set<string>;
 }
 
 export function ThreadLines({
@@ -24,6 +26,8 @@ export function ThreadLines({
   flatMessages: flatMessagesProp,
   selectedIndex: selectedIndexProp,
   focusedMessageIndex,
+  parentMap,
+  siblingParentIds,
 }: ThreadLinesProps) {
   const { stdout } = useStdout();
   const cols = stdout.columns ?? 80;
@@ -42,35 +46,63 @@ export function ThreadLines({
   const selectedIndex = selectedIndexProp ?? -1;
   const focusedIdx = focusedMessageIndex ?? (thread ? thread.ancestors.length : -1);
 
-  // Format all messages
-  const formatted = useMemo<FormattedThreadMessage[]>(() => {
+  // Compute direct parent IDs of the focus message (from parentMap or ancestor list)
+  const directParentIds = useMemo<Set<string>>(() => {
+    if (!thread) return new Set();
+    const focusId = thread.message.id;
+    const pids = parentMap?.get(focusId);
+    if (pids) return new Set(pids);
+    // Fallback: all ancestors are treated as plain ancestors
+    return new Set();
+  }, [thread, parentMap]);
+
+  // Format all messages with DAG-aware positions
+  const formatted = useMemo<(FormattedThreadMessage | { separator: true })[]>(() => {
     if (!thread || flatMessages.length === 0) return [];
 
     const ancestorCount = thread.ancestors.length;
     const totalCount = flatMessages.length;
+    const result: (FormattedThreadMessage | { separator: true })[] = [];
+    let separatorInserted = false;
 
-    return flatMessages.map((msg, i) => {
-      let position: "ancestor" | "current" | "descendant";
+    for (let i = 0; i < totalCount; i++) {
+      const msg = flatMessages[i];
+      let position: "ancestor" | "direct-parent" | "current" | "descendant" | "sibling-parent";
       let isLast: boolean;
+
       if (i < ancestorCount) {
-        position = "ancestor";
+        // Ancestor: check if it's a direct parent of the focus message
+        position = directParentIds.has(msg.id) ? "direct-parent" : "ancestor";
         isLast = i === ancestorCount - 1;
       } else if (i === ancestorCount) {
         position = "current";
         isLast = false;
       } else {
-        position = "descendant";
-        isLast = i === totalCount - 1;
+        // Descendant area: check if it's a sibling parent
+        if (siblingParentIds?.has(msg.id)) {
+          // Insert separator before the first sibling parent
+          if (!separatorInserted) {
+            separatorInserted = true;
+            result.push({ separator: true });
+          }
+          position = "sibling-parent";
+          isLast = i === totalCount - 1;
+        } else {
+          position = "descendant";
+          isLast = i === totalCount - 1;
+        }
       }
 
-      return formatThreadMessage(msg, metrics, {
+      result.push(formatThreadMessage(msg, metrics, {
         selected: i === selectedIndex,
         position,
         isLast,
         totalAncestors: ancestorCount,
-      });
-    });
-  }, [thread, flatMessages, metrics, selectedIndex]);
+      }));
+    }
+
+    return result;
+  }, [thread, flatMessages, metrics, selectedIndex, directParentIds, siblingParentIds]);
 
   // Compute available content rows (panel height minus header/separator/hints/border chrome)
   // Header: 1, separator: 1, bottom hints: 1 when focused, border: 2
@@ -81,8 +113,16 @@ export function ThreadLines({
   const allLines = useMemo(() => {
     const lines: { spans: TextSpan[]; msgIndex: number }[] = [];
     for (let mi = 0; mi < formatted.length; mi++) {
-      for (const line of formatted[mi].lines) {
-        lines.push({ spans: line.spans, msgIndex: mi });
+      const entry = formatted[mi];
+      if ("separator" in entry) {
+        lines.push({
+          spans: [{ text: "  also in thread:", color: theme.dim, dimColor: true }],
+          msgIndex: mi,
+        });
+      } else {
+        for (const line of entry.lines) {
+          lines.push({ spans: line.spans, msgIndex: mi });
+        }
       }
     }
     return lines;
@@ -135,7 +175,7 @@ export function ThreadLines({
         </Text>
         {thread && (
           <Text color={theme.dim}>
-            {" "}{sym.separator} {flatMessages.length} msgs
+            {" "}{sym.separator} {flatMessages.length} msg{flatMessages.length !== 1 ? "s" : ""}
           </Text>
         )}
       </Box>

@@ -31,6 +31,8 @@ interface LayoutProps {
   threadFlatMessages?: StoredMessage[];
   threadSelectedIndex?: number;
   threadFocusedIndex?: number;
+  threadParentMap?: Map<string, string[]>;
+  threadSiblingParentIds?: Set<string>;
 
   // Composer
   composerActive: boolean;
@@ -61,6 +63,8 @@ export function Layout({
   threadFlatMessages,
   threadSelectedIndex,
   threadFocusedIndex,
+  threadParentMap,
+  threadSiblingParentIds,
   composerActive,
   replyToIds,
   replyTargets,
@@ -120,6 +124,8 @@ export function Layout({
           flatMessages={threadFlatMessages}
           selectedIndex={threadSelectedIndex}
           focusedMessageIndex={threadFocusedIndex}
+          parentMap={threadParentMap}
+          siblingParentIds={threadSiblingParentIds}
         />
       </Box>
 
