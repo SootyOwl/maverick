@@ -26,14 +26,9 @@ export function useTerminalResize() {
       // Only act if dimensions actually changed
       if (newCols === lastCols && newRows === lastRows) return;
 
-      // Ink already handles width decrease, so we handle:
-      // - width increase
-      // - any height change
-      const widthDecreased = newCols < lastCols;
-      if (!widthDecreased) {
-        // Clear screen + scrollback, cursor to home
-        stdout.write("\x1b[2J\x1b[3J\x1b[H");
-      }
+      // Clear screen on ANY resize to prevent leftover artifacts.
+      // Ink's built-in handling of width decrease is insufficient.
+      stdout.write("\x1b[2J\x1b[3J\x1b[H");
 
       lastCols = newCols;
       lastRows = newRows;
