@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text, useStdout } from "ink";
 import { theme, sym } from "../theme.js";
 import { sanitize } from "../../utils/sanitize.js";
+import { truncate } from "../utils.js";
 import type { ChannelState } from "../../community/state.js";
 
 interface ChannelListProps {
@@ -47,9 +48,7 @@ export function ChannelList({
       {/* Community header */}
       <Box paddingX={1} paddingY={0}>
         <Text bold color={focused ? theme.accentBright : theme.text}>
-          {communityName.length > nameMaxLen
-            ? communityName.slice(0, nameMaxLen - 1) + sym.ellipsis
-            : communityName}
+          {truncate(communityName, nameMaxLen)}
         </Text>
       </Box>
 
@@ -124,9 +123,7 @@ function ChannelItem({
       >
         {" "}
         {sym.hash}
-        {name.length > maxLen
-          ? name.slice(0, maxLen - 1) + sym.ellipsis
-          : name}
+        {truncate(name, maxLen)}
       </Text>
     </Box>
   );
