@@ -159,10 +159,12 @@ export function MessageView({
         )}
         {visibleMessages.map((msg, i) => {
           const globalIdx = startIdx + i;
-          // Group consecutive messages from the same sender
-          // At viewport boundary (i===0), check against actual previous message
+          // Group consecutive messages from the same sender.
+          // First visible message always shows sender when prior messages are off-screen.
           const prevMsg = globalIdx > 0 ? messages[globalIdx - 1] : null;
+          const prevIsVisible = i > 0;
           const sameSender =
+            prevIsVisible &&
             prevMsg !== null &&
             prevMsg.senderInboxId === msg.senderInboxId &&
             msg.createdAt - prevMsg.createdAt < 300_000 && // within 5 min
