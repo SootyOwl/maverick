@@ -286,6 +286,57 @@ describe("TUI components", () => {
     expect(output).toContain("alice");
   });
 
+  it("renders ThreadLines with sibling parent", () => {
+    const mkMsg = (id: string, handle: string, ts: number) => ({
+      id,
+      channel_id: "ch-1",
+      sender_inbox_id: `inbox-${handle}`,
+      sender_did: null,
+      sender_handle: handle,
+      text: `Message from ${handle}`,
+      edit_of: null,
+      delete_of: null,
+      created_at: ts,
+      raw_content: null,
+    });
+
+    const msgA = mkMsg("A", "alice", 1000);
+    const msgB = mkMsg("B", "bob", 2000);
+    const msgC = mkMsg("C", "carol", 3000);
+
+    const parentMap = new Map<string, string[]>();
+    parentMap.set("C", ["A", "B"]);
+
+    const siblingParentIds = new Set(["B"]);
+
+    const thread = {
+      ancestors: [],
+      message: msgA,
+      descendants: [msgB, msgC],
+      parentMap,
+    };
+
+    const flatMessages = [msgA, msgB, msgC];
+
+    const { lastFrame } = render(
+      <ThreadLines
+        thread={thread}
+        focused={true}
+        flatMessages={flatMessages}
+        selectedIndex={0}
+        parentMap={parentMap}
+        siblingParentIds={siblingParentIds}
+      />,
+    );
+    const output = lastFrame();
+    // All three senders should be visible
+    expect(output).toContain("alice");
+    expect(output).toContain("bob");
+    expect(output).toContain("carol");
+    // Separator should appear (may word-wrap in narrow panel)
+    expect(output).toContain("also in");
+  });
+
   it("renders ProfileCard", () => {
     const { lastFrame } = render(
       <ProfileCard

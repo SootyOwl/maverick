@@ -320,6 +320,59 @@ describe("getChannelMessages returns newest messages", () => {
   });
 });
 
+describe("getThreadContext — sibling parent discovery", () => {
+  it("discovers sibling parents of descendants", () => {
+    // A (focus), B (independent), C replies to [A, B]
+    // When viewing A's thread, B should appear as a sibling parent in descendants
+    insertMessage(db, { id: "A", channelId: "chan-1", senderInboxId: "alice", text: "A", createdAt: 1000 });
+    insertMessage(db, { id: "B", channelId: "chan-1", senderInboxId: "bob", text: "B", createdAt: 2000 });
+    insertMessage(db, { id: "C", channelId: "chan-1", senderInboxId: "carol", text: "C", createdAt: 3000 });
+    insertParents(db, "C", ["A", "B"]);
+
+    const ctx = getThreadContext(db, "A")!;
+    expect(ctx.message.id).toBe("A");
+    expect(ctx.ancestors).toHaveLength(0);
+    // Both C and B should be in descendants
+    const descIds = ctx.descendants.map((d) => d.id).sort();
+    expect(descIds).toEqual(["B", "C"]);
+  });
+
+  it("includes parentMap for all thread messages", () => {
+    insertMessage(db, { id: "A", channelId: "chan-1", senderInboxId: "alice", text: "A", createdAt: 1000 });
+    insertMessage(db, { id: "B", channelId: "chan-1", senderInboxId: "bob", text: "B", createdAt: 2000 });
+    insertMessage(db, { id: "C", channelId: "chan-1", senderInboxId: "carol", text: "C", createdAt: 3000 });
+    insertParents(db, "C", ["A", "B"]);
+
+    const ctx = getThreadContext(db, "A")!;
+    expect(ctx.parentMap).toBeDefined();
+    // C should have parents [A, B] in the map
+    const cParents = ctx.parentMap!.get("C")!.sort();
+    expect(cParents).toEqual(["A", "B"]);
+    // A and B have no parents in the thread
+    expect(ctx.parentMap!.has("A")).toBe(false);
+    expect(ctx.parentMap!.has("B")).toBe(false);
+  });
+
+  it("does not expand sibling parent subtrees", () => {
+    // A (focus), B (independent), C replies to [A, B]
+    // B also has children D and E (unrelated to A)
+    // D and E should NOT appear in A's thread
+    insertMessage(db, { id: "A", channelId: "chan-1", senderInboxId: "alice", text: "A", createdAt: 1000 });
+    insertMessage(db, { id: "B", channelId: "chan-1", senderInboxId: "bob", text: "B", createdAt: 2000 });
+    insertMessage(db, { id: "C", channelId: "chan-1", senderInboxId: "carol", text: "C", createdAt: 3000 });
+    insertMessage(db, { id: "D", channelId: "chan-1", senderInboxId: "dave", text: "D", createdAt: 4000 });
+    insertMessage(db, { id: "E", channelId: "chan-1", senderInboxId: "eve", text: "E", createdAt: 5000 });
+    insertParents(db, "C", ["A", "B"]);
+    insertParents(db, "D", ["B"]);
+    insertParents(db, "E", ["B"]);
+
+    const ctx = getThreadContext(db, "A")!;
+    const descIds = ctx.descendants.map((d) => d.id).sort();
+    // Only B and C should be present, NOT D or E
+    expect(descIds).toEqual(["B", "C"]);
+  });
+});
+
 describe("getVisibleMessages — sender validation on edits/deletes", () => {
   it("ignores delete from a different sender than the original author", () => {
     insertMessage(db, {
