@@ -118,9 +118,33 @@ export function ChatScreen({
       onEscape: () => {
         setReplyToIds([]);
       },
+      onThreadNavigateUp: () => threadCtx.selectPrev(),
+      onThreadNavigateDown: () => threadCtx.selectNext(),
+      onThreadSelect: () => {
+        // Jump to the selected thread message in the main message list
+        if (threadCtx.selectedMessage) {
+          const idx = msgs.messages.findIndex((m) => m.id === threadCtx.selectedMessage!.id);
+          if (idx >= 0) {
+            msgs.selectIndex(idx);
+          }
+        }
+      },
+      onThreadReply: () => {
+        if (threadCtx.selectedMessage) {
+          setReplyToIds([threadCtx.selectedMessage.id]);
+        }
+      },
     }),
     [msgs, community, threadCtx, metaGroupId, communityName, onBack, onNavigate, isAdmin],
   );
+
+  // Live-refresh thread panel when new messages arrive
+  const messageCount = msgs.messages.length;
+  useEffect(() => {
+    if (threadCtx.threadMessageId) {
+      threadCtx.refresh();
+    }
+  }, [messageCount]);
 
   const keyboard = useKeyboard(keyActions);
 
@@ -184,6 +208,9 @@ export function ChatScreen({
       channelName={channelName}
       loading={msgs.loading}
       thread={threadCtx.thread}
+      threadFlatMessages={threadCtx.flatMessages}
+      threadSelectedIndex={threadCtx.selectedIndex}
+      threadFocusedIndex={threadCtx.thread ? threadCtx.thread.ancestors.length : -1}
       composerActive={keyboard.mode === "insert"}
       replyToIds={replyToIds}
       replyTargets={replyTargets}
