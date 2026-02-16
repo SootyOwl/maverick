@@ -44,15 +44,22 @@
   "remoteUser": "node",
   "mounts": [
     "source=claude-code-bashhistory-${devcontainerId},target=/commandhistory,type=volume",
-    "source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume"
+    "source=claude-code-config-${devcontainerId},target=/home/node/.claude,type=volume",
+    "source=${localEnv:HOME}${localEnv:USERPROFILE}/.claude,target=/home/node/.claude-host,type=bind,readonly"
   ],
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
-    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
   },
+  "postStartCommand": "bash /workspace/.devcontainer/sync-claude-config.sh",
   "remoteEnv": {
-    "PATH": "${containerEnv:PATH}:/home/node/.local/bin"
+    "PATH": "${containerEnv:PATH}:/home/node/.local/bin",
+    "LETTA_API_KEY": "${localEnv:LETTA_API_KEY}",
+    "LETTA_BASE_URL": "${localEnv:LETTA_BASE_URL}",
+    "LETTA_MODEL": "${localEnv:LETTA_MODEL}",
+    "LETTA_HOME": "/home/node/.claude/letta",
+    "LETTA_AGENT_ID": "agent-f6aafb0c-a3f8-4fc4-86e9-e819e1f6aafa"
   },
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace"
