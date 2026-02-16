@@ -18,6 +18,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Implement Tasks 8-11: Community Manager, Messaging, Invites, CLI (#1)
 
 ### Fixed
+- Fix newline artifact on first character in composer (#23)
+- Fix password stars rendering vertically on paste (#22)
+- Gate channel create and invite actions behind admin role check (#21)
+- Fix narrow terminal causing truncation and broken layout (#20)
+- Fix terminal resize leaving UI artifacts (#19)
 - Fix TUI theme colors for dark terminal readability (#15)
 - Register custom codecs when creating XMTP client (#3)
 - Fix env var loading + add integration tests with mocks (#2)
