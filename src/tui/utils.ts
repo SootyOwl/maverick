@@ -111,7 +111,7 @@ export function formatMessage(
     lines.push({
       spans: [
         { text: "   " },
-        { text: `${sym.treeCorner}${sym.treeHoriz} reply to ${ids}`, color: theme.dim },
+        { text: `${sym.replyArrow} reply to ${ids}`, color: theme.dim },
       ],
     });
   }

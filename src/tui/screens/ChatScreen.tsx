@@ -115,6 +115,9 @@ export function ChatScreen({
             });
           }
         : undefined,
+      onEscape: () => {
+        setReplyToIds([]);
+      },
     }),
     [msgs, community, threadCtx, metaGroupId, communityName, onBack, onNavigate, isAdmin],
   );

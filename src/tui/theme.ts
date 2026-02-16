@@ -64,6 +64,7 @@ export const sym = {
   treeEnd: "└",
   treeHoriz: "─",
   treeCorner: "╰",
+  replyArrow: "↳",
 
   // Channel
   hash: "#",

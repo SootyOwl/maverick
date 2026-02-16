@@ -28,6 +28,8 @@ export interface KeyboardActions {
   onNewChannel?: () => void;
   /** Optional: I — invite & add member */
   onInvite?: () => void;
+  /** Optional: Esc in normal mode (e.g. cancel pending reply) */
+  onEscape?: () => void;
 }
 
 export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
@@ -45,6 +47,11 @@ export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
         }
 
         // Normal mode keybindings
+        if (key.escape) {
+          actions.onEscape?.();
+          return;
+        }
+
         if (input === "q") {
           actions.onQuit();
           return;
@@ -90,6 +97,8 @@ export function useKeyboard(actions: KeyboardActions): UseKeyboardResult {
 
         if (input === "r") {
           actions.onReply();
+          setMode("insert");
+          setPanel("messages");
           return;
         }
 
