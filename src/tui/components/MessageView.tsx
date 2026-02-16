@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { theme, sym } from "../theme.js";
 import { Message } from "./Message.js";
 import type { VisibleMessage } from "../../messaging/dag.js";
@@ -35,6 +35,10 @@ export function MessageView({
   focused,
   loading,
 }: MessageViewProps) {
+  const { stdout } = useStdout();
+  // Account for border (2 chars) + padding (2 chars) + channel list (~26) + separators (~2)
+  const separatorWidth = Math.max(10, (stdout.columns ?? 80) - 34);
+
   return (
     <Box
       flexDirection="column"
@@ -62,7 +66,7 @@ export function MessageView({
 
       <Box paddingX={1}>
         <Text color={theme.borderSubtle}>
-          {"─".repeat(60)}
+          {"─".repeat(separatorWidth)}
         </Text>
       </Box>
 

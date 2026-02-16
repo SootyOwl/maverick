@@ -65,8 +65,8 @@ export function Message({ message, selected, compact }: MessageProps) {
           </Text>
         )}
 
-        {/* Message body — truncate to prevent layout-breaking long messages */}
-        <Text color={selected ? theme.text : theme.textSecondary} wrap="truncate-end">
+        {/* Message body */}
+        <Text color={selected ? theme.text : theme.textSecondary} wrap="wrap">
           {sanitize(message.text.length > 500 ? message.text.slice(0, 497) + "..." : message.text)}
         </Text>
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { Box, Text } from "ink";
+import { Box, Text, useStdout } from "ink";
 import { theme, sym } from "../theme.js";
 import { sanitize } from "../../utils/sanitize.js";
 import type { ChannelState } from "../../community/state.js";
@@ -18,6 +18,12 @@ export function ChannelList({
   focused,
   communityName,
 }: ChannelListProps) {
+  const { stdout } = useStdout();
+  const cols = stdout.columns ?? 80;
+  // Shrink channel list on narrow terminals: ~25% of width, clamped to 16–26
+  const sidebarWidth = Math.max(16, Math.min(26, Math.floor(cols * 0.25)));
+  const nameMaxLen = sidebarWidth - 5; // account for bar + space + hash + padding
+
   // Group channels by category
   const categorized = new Map<string, ChannelState[]>();
   const uncategorized: ChannelState[] = [];
@@ -34,22 +40,22 @@ export function ChannelList({
   return (
     <Box
       flexDirection="column"
-      width={26}
+      width={sidebarWidth}
       borderStyle="round"
       borderColor={focused ? theme.accent : theme.border}
     >
       {/* Community header */}
       <Box paddingX={1} paddingY={0}>
         <Text bold color={focused ? theme.accentBright : theme.text}>
-          {communityName.length > 22
-            ? communityName.slice(0, 21) + sym.ellipsis
+          {communityName.length > nameMaxLen
+            ? communityName.slice(0, nameMaxLen - 1) + sym.ellipsis
             : communityName}
         </Text>
       </Box>
 
       <Box paddingX={1}>
         <Text color={theme.borderSubtle}>
-          {"─".repeat(22)}
+          {"─".repeat(Math.max(4, sidebarWidth - 4))}
         </Text>
       </Box>
 
@@ -59,6 +65,7 @@ export function ChannelList({
           key={ch.channelId}
           channel={ch}
           isCurrent={ch.channelId === currentChannelId}
+          maxLen={nameMaxLen}
         />
       ))}
 
@@ -75,6 +82,7 @@ export function ChannelList({
               key={ch.channelId}
               channel={ch}
               isCurrent={ch.channelId === currentChannelId}
+              maxLen={nameMaxLen}
             />
           ))}
         </Box>
@@ -97,10 +105,13 @@ export function ChannelList({
 function ChannelItem({
   channel,
   isCurrent,
+  maxLen,
 }: {
   channel: ChannelState;
   isCurrent: boolean;
+  maxLen: number;
 }) {
+  const name = sanitize(channel.name);
   return (
     <Box flexDirection="row" paddingLeft={0}>
       {/* Selection indicator bar */}
@@ -113,9 +124,9 @@ function ChannelItem({
       >
         {" "}
         {sym.hash}
-        {sanitize(channel.name).length > 19
-          ? sanitize(channel.name).slice(0, 18) + sym.ellipsis
-          : sanitize(channel.name)}
+        {name.length > maxLen
+          ? name.slice(0, maxLen - 1) + sym.ellipsis
+          : name}
       </Text>
     </Box>
   );
