@@ -1,20 +1,23 @@
 import { Command } from "commander";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { loadConfig } from "./config.js";
 import { createBlueskySession } from "./identity/atproto.js";
 import {
   createXmtpClient,
-  getOrCreatePrivateKey,
+  getCachedPrivateKey,
+  createNewIdentity,
+  recoverIdentity,
+  importRawKey,
+  migrateLegacyIdentity,
 } from "./identity/xmtp.js";
-import { publishInboxRecord } from "./identity/bridge.js";
+import { publishMaverickRecord, getMaverickRecord } from "./identity/bridge.js";
 import {
   resolveHandleToInbox,
   verifyInboxAssociation,
 } from "./identity/resolver.js";
 import { createDatabase } from "./storage/db.js";
 import { CommunityManager } from "./community/manager.js";
-import { getChannels } from "./storage/community-cache.js";
 import {
   createInvite,
   verifyInvite,
@@ -22,7 +25,7 @@ import {
   decodeInvite,
 } from "./community/invites.js";
 import { sendMessage } from "./messaging/sender.js";
-import { MaverickMessageCodec, MaverickMessageContentType } from "./messaging/codec.js";
+import { MaverickMessageContentType } from "./messaging/codec.js";
 import { insertMessage, insertParents } from "./storage/messages.js";
 import { saveSession, clearSession } from "./storage/session.js";
 import { sanitize } from "./utils/sanitize.js";
@@ -37,7 +40,10 @@ program
   .description("Private community chat on ATProto + XMTP")
   .version("0.1.0");
 
-// Shared bootstrap: authenticate + create clients
+// ─── Non-interactive bootstrap ───────────────────────────────────────────
+// Used by all commands except `login` and `recover`.
+// Fails with guidance if no cached key exists.
+
 async function bootstrap(): Promise<{
   config: Config;
   bsky: BlueskySession;
@@ -48,7 +54,25 @@ async function bootstrap(): Promise<{
   mkdirSync(config.dataDir, { recursive: true });
 
   const bsky = await createBlueskySession(config);
-  const privateKey = await getOrCreatePrivateKey(bsky.handle, config.bluesky.password);
+
+  // Try cache first
+  let privateKey = await getCachedPrivateKey(bsky.handle);
+
+  // Try legacy migration (old passphrase-encrypted key file)
+  if (!privateKey) {
+    privateKey = await migrateLegacyIdentity(bsky.handle, config.bluesky.password);
+    if (privateKey) {
+      console.log("Migrated legacy key to new storage format.");
+    }
+  }
+
+  // No key found — fail with guidance
+  if (!privateKey) {
+    throw new Error(
+      "No identity found. Run `maverick login` to set up or recover your identity.",
+    );
+  }
+
   const xmtp = await createXmtpClient(config, privateKey);
 
   return { config, bsky, xmtp, privateKey };
@@ -58,28 +82,191 @@ async function bootstrap(): Promise<{
 
 program
   .command("login")
-  .description(
-    "Authenticate with Bluesky + create XMTP client + publish identity bridge",
-  )
+  .description("Authenticate with Bluesky + set up or recover XMTP identity")
   .action(async () => {
-    const { config, bsky, xmtp } = await bootstrap();
+    const config = loadConfig();
+    mkdirSync(config.dataDir, { recursive: true });
+    const bsky = await createBlueskySession(config);
 
-    console.log(`Logged in as ${bsky.handle} (${bsky.did})`);
-    console.log(`XMTP Inbox ID: ${xmtp.inboxId}`);
-    console.log(`Installation ID: ${xmtp.installationId}`);
+    console.log(`Authenticated as ${bsky.handle} (${bsky.did})`);
 
-    console.log("Publishing identity bridge record...");
-    await publishInboxRecord(bsky.agent, xmtp);
-    console.log("Published org.xmtp.inbox record on PDS");
-
-    try {
+    // 1. Try cached key
+    let privateKey = await getCachedPrivateKey(bsky.handle);
+    if (privateKey) {
+      const xmtp = await createXmtpClient(config, privateKey);
+      console.log(`Already logged in. Inbox ID: ${xmtp.inboxId}`);
+      await publishMaverickRecord(bsky.agent, xmtp);
       saveSession(bsky.handle, config.bluesky.password);
-      console.log("Session saved to OS keychain");
-    } catch {
-      // Non-fatal: keychain may be unavailable
+      console.log("Login complete!");
+      return;
     }
 
+    // 2. Try legacy migration
+    privateKey = await migrateLegacyIdentity(bsky.handle, config.bluesky.password);
+    if (privateKey) {
+      const xmtp = await createXmtpClient(config, privateKey);
+      console.log(`Migrated legacy key. Inbox ID: ${xmtp.inboxId}`);
+      await publishMaverickRecord(bsky.agent, xmtp);
+      saveSession(bsky.handle, config.bluesky.password);
+      console.log("Login complete!");
+      return;
+    }
+
+    // 3. Check PDS for community.maverick.inbox (returning user detection)
+    const existingRecord = await getMaverickRecord(bsky.agent, bsky.did);
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+
+    if (existingRecord) {
+      // Returning user — prompt for recovery phrase
+      console.log("\nExisting Maverick identity found on your PDS.");
+      console.log(`Inbox ID: ${existingRecord.inboxId}`);
+      console.log("Enter your recovery phrase to restore access.\n");
+
+      const phrase = await ask("Recovery phrase: ");
+      privateKey = await recoverIdentity(bsky.handle, bsky.did, phrase);
+      const xmtp = await createXmtpClient(config, privateKey);
+
+      // Verify inbox ID matches
+      if (xmtp.inboxId !== existingRecord.inboxId) {
+        console.error(
+          `\nInbox ID mismatch! Expected: ${existingRecord.inboxId}, got: ${xmtp.inboxId}`,
+        );
+        console.error(
+          "Wrong recovery phrase. Try again or use `maverick login` with the correct phrase.",
+        );
+        rl.close();
+        process.exit(1);
+      }
+
+      console.log(`Recovered! Inbox ID: ${xmtp.inboxId}`);
+
+      // Recover communities
+      const db = createDatabase(config.sqlitePath);
+      const manager = new CommunityManager(xmtp, db);
+      console.log("Recovering communities...");
+      const result = await manager.recoverAllCommunities();
+      console.log(
+        `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
+      );
+      db.close();
+
+      await publishMaverickRecord(bsky.agent, xmtp);
+      saveSession(bsky.handle, config.bluesky.password);
+      rl.close();
+      console.log("Login complete!");
+      return;
+    }
+
+    // 4. New user — generate phrase
+    console.log("\nNo existing Maverick identity found. Creating new identity.\n");
+
+    const { recoveryPhrase, privateKey: newKey } = await createNewIdentity(
+      bsky.handle,
+      bsky.did,
+    );
+    privateKey = newKey;
+
+    console.log("========================================");
+    console.log("  YOUR RECOVERY PHRASE");
+    console.log("  Write this down and keep it safe:");
+    console.log(`\n  ${recoveryPhrase}\n`);
+    console.log("  You need this phrase to recover your");
+    console.log("  identity on a new device.");
+    console.log("========================================\n");
+
+    // Confirm phrase
+    const confirmed = await ask("Type your recovery phrase to confirm: ");
+    const { normalizePhrase } = await import("./identity/recovery-phrase.js");
+    if (normalizePhrase(confirmed) !== normalizePhrase(recoveryPhrase)) {
+      console.error("\nPhrase does not match! Please try again.");
+      console.error(`Expected ${recoveryPhrase.split(" ").length} words.`);
+      // Let them retry
+      const retry = await ask("Type your recovery phrase to confirm: ");
+      if (normalizePhrase(retry) !== normalizePhrase(recoveryPhrase)) {
+        console.error(
+          "\nPhrase still does not match. Your identity has been created.",
+        );
+        console.error("Run `maverick export-key` to back up your private key.");
+      } else {
+        console.log("Phrase confirmed!");
+      }
+    } else {
+      console.log("Phrase confirmed!");
+    }
+
+    const xmtp = await createXmtpClient(config, privateKey);
+    console.log(`XMTP Inbox ID: ${xmtp.inboxId}`);
+
+    await publishMaverickRecord(bsky.agent, xmtp);
+    saveSession(bsky.handle, config.bluesky.password);
+    rl.close();
     console.log("\nLogin complete!");
+  });
+
+// ─── recover ──────────────────────────────────────────────────────────────
+
+program
+  .command("recover")
+  .description("Recover identity from a recovery phrase")
+  .action(async () => {
+    const config = loadConfig();
+    mkdirSync(config.dataDir, { recursive: true });
+    const bsky = await createBlueskySession(config);
+
+    console.log(`Authenticated as ${bsky.handle} (${bsky.did})`);
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+
+    const phrase = await ask("Recovery phrase: ");
+    const { validateRecoveryPhrase } = await import("./identity/recovery-phrase.js");
+    if (!validateRecoveryPhrase(phrase)) {
+      console.error("Invalid recovery phrase. Must be 6 words from the EFF Diceware wordlist.");
+      rl.close();
+      return;
+    }
+
+    const privateKey = await recoverIdentity(bsky.handle, bsky.did, phrase);
+    const xmtp = await createXmtpClient(config, privateKey);
+
+    console.log(`Inbox ID: ${xmtp.inboxId}`);
+    console.log(`Installation ID: ${xmtp.installationId}`);
+
+    // Show installation count
+    try {
+      const inboxStates = await xmtp.preferences.fetchInboxStates([xmtp.inboxId]);
+      if (inboxStates?.[0]) {
+        const instCount = inboxStates[0].installations?.length ?? 0;
+        console.log(`Installations: ${instCount}/10`);
+        if (instCount >= 8) {
+          console.warn(
+            "WARNING: Approaching installation limit (10). Consider revoking stale installations.",
+          );
+        }
+      }
+    } catch {
+      // Non-fatal — installation count is informational
+    }
+
+    // Recover communities
+    const db = createDatabase(config.sqlitePath);
+    const manager = new CommunityManager(xmtp, db);
+    console.log("\nRecovering communities...");
+    const result = await manager.recoverAllCommunities();
+    console.log(
+      `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
+    );
+    if (result.historyRequested) {
+      console.log("Message history sync requested from other installations.");
+    }
+    db.close();
+
+    await publishMaverickRecord(bsky.agent, xmtp);
+    saveSession(bsky.handle, config.bluesky.password);
+    rl.close();
+    console.log("\nRecovery complete!");
   });
 
 // ─── logout ──────────────────────────────────────────────────────────────
@@ -99,6 +286,55 @@ program
     }
   });
 
+// ─── status ──────────────────────────────────────────────────────────────
+
+program
+  .command("status")
+  .description("Show identity and installation status")
+  .action(async () => {
+    const { config, bsky, xmtp } = await bootstrap();
+
+    console.log(`Handle:          ${bsky.handle}`);
+    console.log(`DID:             ${bsky.did}`);
+    console.log(`XMTP Inbox ID:   ${xmtp.inboxId}`);
+    console.log(`Installation ID: ${xmtp.installationId}`);
+
+    // Check installations
+    try {
+      const inboxStates = await xmtp.preferences.fetchInboxStates([xmtp.inboxId]);
+      if (inboxStates?.[0]) {
+        const installations = inboxStates[0].installations ?? [];
+        console.log(`\nInstallations:   ${installations.length}/10`);
+        if (installations.length >= 8) {
+          console.warn(
+            "WARNING: Approaching installation limit. Run `maverick revoke-stale` to clean up.",
+          );
+        }
+      }
+    } catch {
+      console.log("\nInstallations:   (unable to fetch)");
+    }
+
+    // Check PDS record
+    const record = await getMaverickRecord(bsky.agent, bsky.did);
+    console.log(`\nPDS Record:      ${record ? "published" : "NOT published"}`);
+    if (record) {
+      console.log(`  Inbox ID:      ${record.inboxId}`);
+      console.log(`  Created:       ${record.createdAt}`);
+    }
+
+    // Check local data
+    console.log(`\nLocal Data:      ${config.dataDir}`);
+    console.log(`  SQLite DB:     ${existsSync(config.sqlitePath) ? "exists" : "missing"}`);
+    console.log(`  XMTP DB:       ${existsSync(config.xmtp.dbPath) ? "exists" : "missing"}`);
+
+    if (!existsSync(config.sqlitePath) || !existsSync(config.xmtp.dbPath)) {
+      console.log(
+        "\nSome local data is missing. Run `maverick recover` to rebuild from the network.",
+      );
+    }
+  });
+
 // ─── whoami ───────────────────────────────────────────────────────────────
 
 program
@@ -111,6 +347,143 @@ program
     console.log(`DID:             ${bsky.did}`);
     console.log(`XMTP Inbox ID:   ${xmtp.inboxId}`);
     console.log(`Installation ID: ${xmtp.installationId}`);
+  });
+
+// ─── installations ───────────────────────────────────────────────────────
+
+program
+  .command("installations")
+  .description("List XMTP installations for your inbox")
+  .action(async () => {
+    const { xmtp } = await bootstrap();
+
+    const inboxStates = await xmtp.preferences.fetchInboxStates([xmtp.inboxId]);
+    if (!inboxStates?.[0]?.installations?.length) {
+      console.log("No installations found.");
+      return;
+    }
+
+    const installations = inboxStates[0].installations;
+    console.log(`Installations (${installations.length}/10):\n`);
+
+    const currentHex = Buffer.from(xmtp.installationIdBytes).toString("hex");
+
+    for (const inst of installations) {
+      const instHex = Buffer.from(inst.bytes).toString("hex");
+      const isCurrent = instHex === currentHex;
+      const marker = isCurrent ? " (current)" : "";
+      const shortId = instHex.slice(0, 16);
+      console.log(`  ${shortId}...${marker}`);
+    }
+
+    if (installations.length >= 8) {
+      console.warn(
+        "\nWARNING: Approaching 10-installation limit. Consider running `maverick revoke-stale`.",
+      );
+    }
+  });
+
+// ─── revoke-stale ────────────────────────────────────────────────────────
+
+program
+  .command("revoke-stale")
+  .description("Revoke stale XMTP installations")
+  .option("--all", "Revoke ALL other installations (not just stale ones)")
+  .action(async (opts: { all?: boolean }) => {
+    const { xmtp } = await bootstrap();
+
+    const inboxStates = await xmtp.preferences.fetchInboxStates([xmtp.inboxId]);
+    if (!inboxStates?.[0]?.installations?.length) {
+      console.log("No installations found.");
+      return;
+    }
+
+    const installations = inboxStates[0].installations;
+    const currentHex = Buffer.from(xmtp.installationIdBytes).toString("hex");
+
+    // Find installations to revoke
+    const toRevoke: Uint8Array[] = [];
+    for (const inst of installations) {
+      const instHex = Buffer.from(inst.bytes).toString("hex");
+      if (instHex === currentHex) continue; // Never revoke current
+
+      if (opts.all) {
+        toRevoke.push(inst.bytes);
+      }
+      // For non-all mode, we'd check key package health here
+      // but fetchKeyPackageStatuses may not be available in all SDK versions.
+      // For now, --all is the only supported mode; without it we skip.
+    }
+
+    if (toRevoke.length === 0) {
+      if (!opts.all && installations.length > 1) {
+        console.log(
+          "Automatic stale installation detection is not yet available.\n" +
+          "Use `maverick revoke-stale --all` to revoke all other installations.",
+        );
+      } else {
+        console.log("No installations to revoke.");
+      }
+      return;
+    }
+
+    console.log(`Revoking ${toRevoke.length} installation(s)...`);
+    await xmtp.revokeInstallations(toRevoke);
+    console.log("Done.");
+  });
+
+// ─── export-key ──────────────────────────────────────────────────────────
+
+program
+  .command("export-key")
+  .description("Display your XMTP private key (SECURITY WARNING)")
+  .action(async () => {
+    const { privateKey, bsky } = await bootstrap();
+
+    console.log("\n========================================");
+    console.log("  SECURITY WARNING");
+    console.log("  Your private key controls your XMTP");
+    console.log("  identity. Never share it with anyone.");
+    console.log("========================================\n");
+    console.log(`Handle: ${bsky.handle}`);
+    console.log(`Key:    ${privateKey}`);
+    console.log("\nUse `maverick import-key <key>` to restore on another device.");
+  });
+
+// ─── import-key ──────────────────────────────────────────────────────────
+
+program
+  .command("import-key")
+  .description("Import an XMTP private key directly")
+  .argument("<key>", "Hex private key (0x...)")
+  .action(async (key: string) => {
+    if (!key.startsWith("0x") || key.length !== 66 || !/^0x[0-9a-fA-F]{64}$/.test(key)) {
+      console.error("Invalid key format. Expected 0x followed by 64 hex characters.");
+      return;
+    }
+
+    // Verify it's a valid secp256k1 private key
+    try {
+      const { privateKeyToAccount } = await import("viem/accounts");
+      privateKeyToAccount(key as `0x${string}`);
+    } catch {
+      console.error("Invalid private key. The value is not a valid secp256k1 key.");
+      return;
+    }
+
+    const config = loadConfig();
+    mkdirSync(config.dataDir, { recursive: true });
+    const bsky = await createBlueskySession(config);
+
+    await importRawKey(bsky.handle, key as `0x${string}`);
+    const xmtp = await createXmtpClient(config, key as `0x${string}`);
+
+    console.log(`Imported key for ${bsky.handle}`);
+    console.log(`Inbox ID: ${xmtp.inboxId}`);
+
+    await publishMaverickRecord(bsky.agent, xmtp);
+    saveSession(bsky.handle, config.bluesky.password);
+    console.log("Import complete!");
   });
 
 // ─── resolve ──────────────────────────────────────────────────────────────
@@ -134,8 +507,8 @@ program
     console.log(`DID:      ${result.did}`);
     console.log(`Inbox ID: ${result.inboxId}`);
 
-    const { getPublishedInboxRecord } = await import("./identity/bridge.js");
-    const record = await getPublishedInboxRecord(bsky.agent, result.did);
+    const { getLegacyInboxRecord } = await import("./identity/bridge.js");
+    const record = await getLegacyInboxRecord(bsky.agent, result.did);
     if (record) {
       const valid = await verifyInboxAssociation(
         result.inboxId,
@@ -319,7 +692,7 @@ program
   .description("Join a community via invite token")
   .argument("<token>", "Invite token string")
   .action(async (token: string) => {
-    const { config, xmtp } = await bootstrap();
+    const { xmtp } = await bootstrap();
 
     const invite = decodeInvite(token);
     console.log(`Joining community: ${invite.communityName}`);
@@ -402,7 +775,6 @@ program
     const { config, xmtp } = await bootstrap();
     const db = createDatabase(config.sqlitePath);
     const manager = new CommunityManager(xmtp, db);
-    const msgCodec = new MaverickMessageCodec();
 
     // Sync state
     console.log("Syncing community state...");
@@ -592,7 +964,18 @@ program
     if (metaGroupId) {
       // Legacy mode: pre-authenticate and jump to chat
       const bsky = await createBlueskySession(config);
-      const privateKey = await getOrCreatePrivateKey(bsky.handle, config.bluesky.password);
+
+      // Non-interactive: try cached key, then legacy migration, then fail
+      let privateKey = await getCachedPrivateKey(bsky.handle);
+      if (!privateKey) {
+        privateKey = await migrateLegacyIdentity(bsky.handle, config.bluesky.password);
+      }
+      if (!privateKey) {
+        throw new Error(
+          "No identity found. Run `maverick login` to set up or recover your identity.",
+        );
+      }
+
       const xmtp = await createXmtpClient(config, privateKey);
       const db = createDatabase(config.sqlitePath);
 
@@ -605,7 +988,7 @@ program
         }),
       );
     } else {
-      // Full-workflow mode: interactive login → community list → chat
+      // Full-workflow mode: interactive login -> community list -> chat
       render(
         React.createElement(App, {
           initialConfig: config,
