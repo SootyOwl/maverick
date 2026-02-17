@@ -332,6 +332,58 @@ export class CommunityManager {
     return communities;
   }
 
+  /**
+   * Recovers all communities after key restoration on a new device.
+   *
+   * Performs a full network sync to discover all groups the user belongs to,
+   * then replays each community's meta channel to rebuild the local cache.
+   * Optionally requests message history from other installations.
+   *
+   * Individual community sync failures are logged but do not abort the
+   * overall recovery process.
+   */
+  async recoverAllCommunities(): Promise<{
+    communities: { groupId: string; name: string }[];
+    channelsRecovered: number;
+    historyRequested: boolean;
+  }> {
+    // 1. Full sync of all groups + messages from the XMTP network
+    await this.xmtpClient.conversations.syncAll();
+
+    // 2. Discover meta channels (communities we belong to)
+    const communities = await this.listCommunities();
+
+    // 3. For each community, replay meta channel to rebuild local cache
+    let channelsRecovered = 0;
+    for (const community of communities) {
+      try {
+        const state = await this.syncCommunityState(community.groupId);
+        for (const [, ch] of state.channels) {
+          if (!ch.archived) {
+            channelsRecovered++;
+          }
+        }
+      } catch (err) {
+        console.error(
+          `Failed to sync community "${community.name}" (${community.groupId}):`,
+          err,
+        );
+      }
+    }
+
+    // 4. Request message history from other installations
+    let historyRequested = false;
+    try {
+      await this.xmtpClient.sendSyncRequest();
+      historyRequested = true;
+    } catch {
+      // sendSyncRequest may fail if no other installations exist or
+      // the method is unavailable — this is non-fatal for recovery.
+    }
+
+    return { communities, channelsRecovered, historyRequested };
+  }
+
   private async getGroupById(groupId: string): Promise<Group> {
     const conversation =
       await this.xmtpClient.conversations.getConversationById(groupId);
