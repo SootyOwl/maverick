@@ -1,30 +1,79 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdirSync, readFileSync, rmSync, existsSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  existsSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { randomBytes } from "node:crypto";
+import { randomBytes, scryptSync, createCipheriv } from "node:crypto";
 
-// We'll override the keys directory for testing by importing the module
-// and using a custom data dir. We need to set the env var BEFORE importing.
+// We'll override the keys directory for testing by setting env vars BEFORE importing.
 const TEST_DIR = join(
   tmpdir(),
   `maverick-keys-test-${randomBytes(8).toString("hex")}`,
 );
 
-// Set the env var so keys.ts uses our test directory
+// Force file-only mode (no keychain in tests) and use our test directory
 process.env.__MAVERICK_KEYS_DIR = TEST_DIR;
+process.env.__MAVERICK_KEYRING_DISABLE = "1";
 
-// Now import AFTER setting the env var
-import { storeKey, getStoredKey, deleteKey } from "../src/storage/keys.js";
-import { getOrCreatePrivateKey, KeyDecryptionError } from "../src/identity/xmtp.js";
+// Now import AFTER setting the env vars
+import {
+  storeKey,
+  getStoredKey,
+  deleteKey,
+  decryptLegacyKey,
+  migrateLegacyKey,
+  hasLegacyKeyFile,
+  _resetKeyringCache,
+} from "../src/storage/keys.js";
 
-describe("encrypted key storage", () => {
+// Helper: create an old-format encrypted key file (AES-256-GCM with scrypt KDF)
+function createLegacyEncryptedFile(
+  handle: string,
+  privateKey: string,
+  passphrase: string,
+): string {
+  const safe = handle.replace(/[^a-zA-Z0-9._-]/g, "_");
+  const filePath = join(TEST_DIR, `${safe}.key`);
+
+  const salt = randomBytes(16);
+  const key = scryptSync(passphrase, salt, 32, {
+    N: 131072,
+    r: 8,
+    p: 1,
+    maxmem: 256 * 1024 * 1024,
+  }) as Buffer;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const encrypted = Buffer.concat([
+    cipher.update(privateKey, "utf-8"),
+    cipher.final(),
+  ]);
+  const tag = cipher.getAuthTag();
+
+  const json = JSON.stringify({
+    salt: salt.toString("base64"),
+    iv: iv.toString("base64"),
+    encrypted: encrypted.toString("base64"),
+    tag: tag.toString("base64"),
+  });
+
+  mkdirSync(TEST_DIR, { recursive: true });
+  writeFileSync(filePath, json, { mode: 0o600 });
+  return filePath;
+}
+
+describe("key storage (new API — no passphrase)", () => {
   const testHandle = "alice.bsky.social";
   const testKey =
     "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
-  const passphrase = "test-app-password-1234";
 
   beforeEach(() => {
+    _resetKeyringCache();
     mkdirSync(TEST_DIR, { recursive: true });
   });
 
@@ -32,60 +81,42 @@ describe("encrypted key storage", () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it("stored key is NOT plaintext on disk", async () => {
-    await storeKey(testHandle, testKey, passphrase);
-
-    // Find the key file and read raw contents
-    const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const filePath = join(TEST_DIR, `${safe}.key`);
-    const raw = readFileSync(filePath, "utf-8");
-
-    // The raw hex key should NOT appear in the file
-    expect(raw).not.toContain(testKey);
-    // The key without 0x prefix should also not appear
-    expect(raw).not.toContain(testKey.slice(2));
-  });
-
-  it("storeKey + getStoredKey roundtrip with correct passphrase", async () => {
-    await storeKey(testHandle, testKey, passphrase);
-    const retrieved = await getStoredKey(testHandle, passphrase);
+  it("storeKey + getStoredKey roundtrip", async () => {
+    await storeKey(testHandle, testKey);
+    const retrieved = await getStoredKey(testHandle);
     expect(retrieved).toBe(testKey);
   });
 
-  it("getStoredKey with wrong passphrase returns null", async () => {
-    await storeKey(testHandle, testKey, passphrase);
-    const retrieved = await getStoredKey(testHandle, "wrong-password");
-    expect(retrieved).toBeNull();
-  });
-
-  it("stored file contains salt, iv, encrypted, and tag fields", async () => {
-    await storeKey(testHandle, testKey, passphrase);
+  it("stored key IS plaintext on disk (new security model)", async () => {
+    await storeKey(testHandle, testKey);
 
     const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
     const filePath = join(TEST_DIR, `${safe}.key`);
-    const raw = readFileSync(filePath, "utf-8");
-    const parsed = JSON.parse(raw);
+    const raw = readFileSync(filePath, "utf-8").trim();
 
-    expect(parsed).toHaveProperty("salt");
-    expect(parsed).toHaveProperty("iv");
-    expect(parsed).toHaveProperty("encrypted");
-    expect(parsed).toHaveProperty("tag");
+    // New model: plaintext hex, same as ~/.ssh/id_ed25519
+    expect(raw).toBe(testKey);
+  });
 
-    // All values should be base64 strings
-    expect(typeof parsed.salt).toBe("string");
-    expect(typeof parsed.iv).toBe("string");
-    expect(typeof parsed.encrypted).toBe("string");
-    expect(typeof parsed.tag).toBe("string");
+  it("file is written with 0600 permissions", async () => {
+    await storeKey(testHandle, testKey);
 
-    // They should be non-empty
-    expect(parsed.salt.length).toBeGreaterThan(0);
-    expect(parsed.iv.length).toBeGreaterThan(0);
-    expect(parsed.encrypted.length).toBeGreaterThan(0);
-    expect(parsed.tag.length).toBeGreaterThan(0);
+    const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filePath = join(TEST_DIR, `${safe}.key`);
+    const { statSync } = await import("node:fs");
+    const stats = statSync(filePath);
+    // 0o600 = owner read+write only (octal 33152 with file type bits, mask to lower 9)
+    const mode = stats.mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it("returns null for a nonexistent handle", async () => {
+    const result = await getStoredKey("nonexistent.handle");
+    expect(result).toBeNull();
   });
 
   it("deleteKey removes the file", async () => {
-    await storeKey(testHandle, testKey, passphrase);
+    await storeKey(testHandle, testKey);
 
     const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
     const filePath = join(TEST_DIR, `${safe}.key`);
@@ -95,51 +126,38 @@ describe("encrypted key storage", () => {
     expect(existsSync(filePath)).toBe(false);
   });
 
-  it("returns null for a nonexistent handle", async () => {
-    const result = await getStoredKey("nonexistent.handle", passphrase);
+  it("getStoredKey returns null after deleteKey", async () => {
+    await storeKey(testHandle, testKey);
+    await deleteKey(testHandle);
+    const result = await getStoredKey(testHandle);
     expect(result).toBeNull();
   });
 
-  it("different passphrases produce different ciphertext", async () => {
-    await storeKey(testHandle, testKey, "password-one");
-    const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const filePath = join(TEST_DIR, `${safe}.key`);
-    const raw1 = readFileSync(filePath, "utf-8");
-
-    await storeKey(testHandle, testKey, "password-two");
-    const raw2 = readFileSync(filePath, "utf-8");
-
-    // Due to random salt + IV, ciphertext should differ
-    expect(raw1).not.toBe(raw2);
+  it("storeKey overwrites existing key", async () => {
+    const newKey =
+      "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
+    await storeKey(testHandle, testKey);
+    await storeKey(testHandle, newKey);
+    const retrieved = await getStoredKey(testHandle);
+    expect(retrieved).toBe(newKey);
   });
 
-  it("migrates a legacy plaintext key file", async () => {
-    // Simulate a legacy plaintext key file
-    const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
-    const filePath = join(TEST_DIR, `${safe}.key`);
-    const { writeFileSync } = await import("node:fs");
-    writeFileSync(filePath, testKey, { mode: 0o600 });
-
-    // Reading with passphrase should detect plaintext, return the key, and migrate
-    const retrieved = await getStoredKey(testHandle, passphrase);
+  it("handles special characters in handle via sanitization", async () => {
+    const weirdHandle = "user@domain/with:special!chars";
+    await storeKey(weirdHandle, testKey);
+    const retrieved = await getStoredKey(weirdHandle);
     expect(retrieved).toBe(testKey);
-
-    // After migration, the file should now be encrypted (JSON, not plaintext)
-    const rawAfter = readFileSync(filePath, "utf-8");
-    expect(rawAfter.startsWith("{")).toBe(true);
-    expect(rawAfter).not.toContain(testKey);
-
-    // Should still be retrievable with the same passphrase
-    const retrievedAgain = await getStoredKey(testHandle, passphrase);
-    expect(retrievedAgain).toBe(testKey);
   });
 });
 
-describe("getOrCreatePrivateKey — key loss prevention", () => {
-  const handle = "keyloss-test.bsky.social";
-  const password = "original-password";
+describe("legacy key migration", () => {
+  const testHandle = "legacy-user.bsky.social";
+  const testKey =
+    "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+  const passphrase = "old-bluesky-app-password";
 
   beforeEach(() => {
+    _resetKeyringCache();
     mkdirSync(TEST_DIR, { recursive: true });
   });
 
@@ -147,36 +165,71 @@ describe("getOrCreatePrivateKey — key loss prevention", () => {
     rmSync(TEST_DIR, { recursive: true, force: true });
   });
 
-  it("creates a new key when no key file exists", async () => {
-    const key = await getOrCreatePrivateKey(handle, password);
-    expect(key).toMatch(/^0x[0-9a-f]{64}$/);
+  it("decryptLegacyKey reads old encrypted format", async () => {
+    createLegacyEncryptedFile(testHandle, testKey, passphrase);
+    const decrypted = await decryptLegacyKey(testHandle, passphrase);
+    expect(decrypted).toBe(testKey);
   });
 
-  it("returns existing key with correct password", async () => {
-    const key1 = await getOrCreatePrivateKey(handle, password);
-    const key2 = await getOrCreatePrivateKey(handle, password);
-    expect(key2).toBe(key1);
+  it("decryptLegacyKey returns null with wrong passphrase", async () => {
+    createLegacyEncryptedFile(testHandle, testKey, passphrase);
+    const decrypted = await decryptLegacyKey(testHandle, "wrong-password");
+    expect(decrypted).toBeNull();
   });
 
-  it("throws KeyDecryptionError when key file exists but password is wrong", async () => {
-    // Store a key with the original password
-    await getOrCreatePrivateKey(handle, password);
-
-    // Try to retrieve with a different password — should throw, not silently generate new key
-    await expect(
-      getOrCreatePrivateKey(handle, "changed-password"),
-    ).rejects.toThrow(KeyDecryptionError);
+  it("decryptLegacyKey returns null for nonexistent file", async () => {
+    const decrypted = await decryptLegacyKey("nobody.bsky.social", passphrase);
+    expect(decrypted).toBeNull();
   });
 
-  it("error message mentions the handle", async () => {
-    await getOrCreatePrivateKey(handle, password);
+  it("hasLegacyKeyFile detects encrypted JSON format", () => {
+    createLegacyEncryptedFile(testHandle, testKey, passphrase);
+    expect(hasLegacyKeyFile(testHandle)).toBe(true);
+  });
 
-    try {
-      await getOrCreatePrivateKey(handle, "wrong-password");
-      expect.fail("Should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(KeyDecryptionError);
-      expect((err as Error).message).toContain(handle);
-    }
+  it("hasLegacyKeyFile returns false for plaintext key file", async () => {
+    await storeKey(testHandle, testKey);
+    expect(hasLegacyKeyFile(testHandle)).toBe(false);
+  });
+
+  it("hasLegacyKeyFile returns false when no file exists", () => {
+    expect(hasLegacyKeyFile("nobody.bsky.social")).toBe(false);
+  });
+
+  it("migrateLegacyKey decrypts and re-stores in new format", async () => {
+    createLegacyEncryptedFile(testHandle, testKey, passphrase);
+
+    // Migrate
+    const result = await migrateLegacyKey(testHandle, passphrase);
+    expect(result).toBe(testKey);
+
+    // Should now be readable without a passphrase
+    const retrieved = await getStoredKey(testHandle);
+    expect(retrieved).toBe(testKey);
+
+    // File should now be plaintext, not encrypted JSON
+    const safe = testHandle.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const filePath = join(TEST_DIR, `${safe}.key`);
+    const raw = readFileSync(filePath, "utf-8").trim();
+    expect(raw).toBe(testKey);
+    expect(raw.startsWith("{")).toBe(false);
+  });
+
+  it("migrateLegacyKey returns null with wrong passphrase", async () => {
+    createLegacyEncryptedFile(testHandle, testKey, passphrase);
+
+    const result = await migrateLegacyKey(testHandle, "wrong-password");
+    expect(result).toBeNull();
+
+    // Original encrypted file should still be intact
+    expect(hasLegacyKeyFile(testHandle)).toBe(true);
+  });
+
+  it("getStoredKey does NOT read legacy encrypted files", async () => {
+    createLegacyEncryptedFile(testHandle, testKey, passphrase);
+
+    // The new getStoredKey (no passphrase) should NOT return the encrypted key
+    const result = await getStoredKey(testHandle);
+    expect(result).toBeNull();
   });
 });
