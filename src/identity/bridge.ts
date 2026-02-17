@@ -23,7 +23,83 @@ function getPdsEndpoint(didDoc: Record<string, unknown>): string | null {
   return null;
 }
 
-export async function publishInboxRecord(
+// ─── Maverick-specific PDS record (community.maverick.inbox) ─────────────────
+
+/**
+ * Publish a `community.maverick.inbox` record on the user's PDS.
+ *
+ * This is Maverick's own identity bridge record. It does NOT include a
+ * verification signature because this record is only consumed by Maverick
+ * clients, which trust the DID owner's PDS.
+ */
+export async function publishMaverickRecord(
+  agent: AtpAgent,
+  xmtpClient: Client,
+): Promise<void> {
+  const did = agent.session!.did;
+
+  await agent.com.atproto.repo.putRecord({
+    repo: did,
+    collection: "community.maverick.inbox",
+    rkey: "self",
+    record: {
+      $type: "community.maverick.inbox",
+      inboxId: xmtpClient.inboxId,
+      createdAt: new Date().toISOString(),
+    },
+  });
+}
+
+/**
+ * Read a `community.maverick.inbox` record from a user's PDS.
+ *
+ * Returns `{ inboxId, createdAt }` or null if the record doesn't exist.
+ */
+export async function getMaverickRecord(
+  agent: AtpAgent,
+  did: string,
+): Promise<{ inboxId: string; createdAt: string } | null> {
+  const pdsUrl = await resolvePds(agent, did);
+
+  const agents: AtpAgent[] = [];
+  if (pdsUrl) {
+    agents.push(new AtpAgent({ service: pdsUrl }));
+  }
+  agents.push(agent);
+
+  for (const a of agents) {
+    try {
+      const response = await a.com.atproto.repo.getRecord({
+        repo: did,
+        collection: "community.maverick.inbox",
+        rkey: "self",
+      });
+      const record = response.data.value as {
+        inboxId?: string;
+        createdAt?: string;
+      };
+      if (!record.inboxId) return null;
+      return {
+        inboxId: record.inboxId,
+        createdAt: record.createdAt ?? "",
+      };
+    } catch {
+      // Try the next agent
+    }
+  }
+
+  return null;
+}
+
+// ─── Legacy PDS record (org.xmtp.inbox) ─────────────────────────────────────
+
+/**
+ * Publish an `org.xmtp.inbox` record on the user's PDS.
+ *
+ * This is the legacy/cross-app identity bridge record used by bluesky-chat,
+ * Converse, and other XMTP apps. Kept for backward compatibility.
+ */
+export async function publishLegacyInboxRecord(
   agent: AtpAgent,
   xmtpClient: Client,
 ): Promise<void> {
@@ -49,45 +125,12 @@ export async function publishInboxRecord(
 }
 
 /**
- * Resolve a DID to its PDS service URL.
+ * Read an `org.xmtp.inbox` record from a user's PDS.
  *
- * Primary: use the authenticated agent's `resolveDid` ATProto endpoint.
- * Fallback: fetch the DID document from PLC directory (public, no auth).
+ * This is the legacy record format. Other users may have published this
+ * via bluesky-chat or other XMTP apps, so the resolver still needs it.
  */
-async function resolvePds(
-  agent: AtpAgent,
-  did: string,
-): Promise<string | null> {
-  // Try the ATProto API first (works when agent is authenticated)
-  try {
-    const identity = await agent.com.atproto.identity.resolveDid({ did });
-    const url = getPdsEndpoint(
-      identity.data.didDoc as Record<string, unknown>,
-    );
-    if (url) return url;
-  } catch {
-    // Agent may be unauthenticated — fall through to PLC directory
-  }
-
-  // Fallback: query PLC directory directly (public HTTP, no auth)
-  if (did.startsWith("did:plc:")) {
-    try {
-      const res = await fetch(
-        `https://plc.directory/${encodeURIComponent(did)}`,
-      );
-      if (res.ok) {
-        const didDoc = (await res.json()) as Record<string, unknown>;
-        return getPdsEndpoint(didDoc);
-      }
-    } catch {
-      // Network error — give up on PDS resolution
-    }
-  }
-
-  return null;
-}
-
-export async function getPublishedInboxRecord(
+export async function getLegacyInboxRecord(
   agent: AtpAgent,
   did: string,
 ): Promise<{
@@ -127,6 +170,47 @@ export async function getPublishedInboxRecord(
       };
     } catch {
       // Try the next agent
+    }
+  }
+
+  return null;
+}
+
+// ─── Internal helpers ────────────────────────────────────────────────────────
+
+/**
+ * Resolve a DID to its PDS service URL.
+ *
+ * Primary: use the authenticated agent's `resolveDid` ATProto endpoint.
+ * Fallback: fetch the DID document from PLC directory (public, no auth).
+ */
+async function resolvePds(
+  agent: AtpAgent,
+  did: string,
+): Promise<string | null> {
+  // Try the ATProto API first (works when agent is authenticated)
+  try {
+    const identity = await agent.com.atproto.identity.resolveDid({ did });
+    const url = getPdsEndpoint(
+      identity.data.didDoc as Record<string, unknown>,
+    );
+    if (url) return url;
+  } catch {
+    // Agent may be unauthenticated — fall through to PLC directory
+  }
+
+  // Fallback: query PLC directory directly (public HTTP, no auth)
+  if (did.startsWith("did:plc:")) {
+    try {
+      const res = await fetch(
+        `https://plc.directory/${encodeURIComponent(did)}`,
+      );
+      if (res.ok) {
+        const didDoc = (await res.json()) as Record<string, unknown>;
+        return getPdsEndpoint(didDoc);
+      }
+    } catch {
+      // Network error — give up on PDS resolution
     }
   }
 

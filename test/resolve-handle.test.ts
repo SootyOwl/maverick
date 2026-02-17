@@ -50,11 +50,11 @@ describe("Handle → InboxId resolution chain", () => {
     expect(record.verificationSignature).toBeTruthy();
   });
 
-  it("step 4: getPublishedInboxRecord works via PLC directory resolution", async () => {
-    const { getPublishedInboxRecord } = await import(
+  it("step 4: getLegacyInboxRecord works via PLC directory resolution", async () => {
+    const { getLegacyInboxRecord } = await import(
       "../src/identity/bridge.js"
     );
-    const record = await getPublishedInboxRecord(agent, EXPECTED_DID);
+    const record = await getLegacyInboxRecord(agent, EXPECTED_DID);
     expect(record).not.toBeNull();
     expect(record!.inboxId).toBeTruthy();
   });

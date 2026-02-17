@@ -1,7 +1,7 @@
 import type { AtpAgent } from "@atproto/api";
 import { Client } from "@xmtp/node-sdk";
 import type { XmtpEnv } from "@xmtp/node-sdk";
-import { getPublishedInboxRecord } from "./bridge.js";
+import { getMaverickRecord, getLegacyInboxRecord } from "./bridge.js";
 
 export class HandleNotFoundError extends Error {
   constructor(handle: string) {
@@ -35,16 +35,19 @@ export async function resolveHandleToInbox(
     throw new HandleNotFoundError(handle);
   }
 
-  // Look up org.xmtp.inbox record on their PDS
-  const record = await getPublishedInboxRecord(agent, did);
-  if (!record) {
-    throw new NoInboxRecordError(handle);
+  // Try Maverick-specific record first
+  const maverickRecord = await getMaverickRecord(agent, did);
+  if (maverickRecord) {
+    return { inboxId: maverickRecord.inboxId, did };
   }
 
-  return {
-    inboxId: record.inboxId,
-    did,
-  };
+  // Fall back to legacy org.xmtp.inbox for users of other XMTP apps
+  const legacyRecord = await getLegacyInboxRecord(agent, did);
+  if (legacyRecord) {
+    return { inboxId: legacyRecord.inboxId, did };
+  }
+
+  throw new NoInboxRecordError(handle);
 }
 
 export async function verifyInboxAssociation(
