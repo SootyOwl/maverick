@@ -74,6 +74,8 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
   const [phraseInput, setPhraseInput] = useState("");        // user's typed phrase
   const [phraseError, setPhraseError] = useState<string | null>(null);
   const [existingInboxId, setExistingInboxId] = useState<string | null>(null);
+  // Pending key held in memory only — committed to storage after phrase confirm
+  const [pendingPrivateKey, setPendingPrivateKey] = useState<`0x${string}` | null>(null);
 
   // ── Intermediate state (saved between Bluesky auth and phrase flow) ──
   const [bskyResult, setBskyResult] = useState<BlueskyResult | null>(null);
@@ -141,12 +143,12 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         setExistingInboxId(record.inboxId);
         setStatus("phraseEntry");
       } else {
-        // New user: generate a recovery phrase and display it
+        // New user: generate a recovery phrase and display it.
+        // The key is held in memory only — not persisted until phrase confirmed.
         const identity = await createNewIdentity(bsky.handle, bsky.did);
         setRecoveryPhrase(identity.recoveryPhrase);
+        setPendingPrivateKey(identity.privateKey);
         setStatus("phraseDisplay");
-        // Note: privateKey is saved in createNewIdentity but we don't proceed
-        // until the user confirms the phrase. The key is already cached.
       }
     } catch (err) {
       setStatus("error");
@@ -243,26 +245,28 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
       return;
     }
 
-    // Phrase confirmed -- proceed with login
+    // Phrase confirmed -- commit key to storage then proceed with login
     setPhraseError(null);
     setStatus("authenticating");
 
-    const { getCachedPrivateKey } = await import("../../identity/xmtp.js");
-    const privateKey = await getCachedPrivateKey(bskyResult.handle);
-    if (!privateKey) {
+    if (!pendingPrivateKey) {
       setStatus("error");
-      setError("Failed to retrieve cached key after identity creation.");
+      setError("No pending key found. Please restart the login flow.");
       return;
     }
+
+    const { commitIdentity } = await import("../../identity/xmtp.js");
+    await commitIdentity(bskyResult.handle, pendingPrivateKey);
+    setPendingPrivateKey(null);
 
     await finishLogin(
       bskyResult.config,
       bskyResult,
-      privateKey,
+      pendingPrivateKey,
       bskyResult.password,
       false,
     );
-  }, [bskyResult, phraseInput, recoveryPhrase, finishLogin]);
+  }, [bskyResult, phraseInput, recoveryPhrase, pendingPrivateKey, finishLogin]);
 
   // ── Phrase entry handler (returning user / recovery) ─────────────────
   const handlePhraseEntry = useCallback(async () => {
@@ -379,6 +383,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         setRecoveryPhrase("");
         setExistingInboxId(null);
         setBskyResult(null);
+        setPendingPrivateKey(null);
         return;
       }
       exit();

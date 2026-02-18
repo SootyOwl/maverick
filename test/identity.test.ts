@@ -9,6 +9,7 @@ import {
   generateDbEncryptionKey,
   getCachedPrivateKey,
   createNewIdentity,
+  commitIdentity,
   recoverIdentity,
   importRawKey,
   migrateLegacyIdentity,
@@ -139,10 +140,13 @@ describe("XMTP identity flow", () => {
       expect(privateKey).toMatch(/^0x[0-9a-f]{64}$/);
     });
 
-    it("caches the key so getCachedPrivateKey returns it", async () => {
+    it("does NOT cache the key until commitIdentity is called", async () => {
       const { privateKey } = await createNewIdentity(testHandle, testDid);
-      const cached = await getCachedPrivateKey(testHandle);
-      expect(cached).toBe(privateKey);
+      // Key must not be persisted before the user confirms the recovery phrase
+      expect(await getCachedPrivateKey(testHandle)).toBeNull();
+
+      await commitIdentity(testHandle, privateKey);
+      expect(await getCachedPrivateKey(testHandle)).toBe(privateKey);
     });
 
     it("the private key matches what derivePrivateKey produces from the phrase", async () => {

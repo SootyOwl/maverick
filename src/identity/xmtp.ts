@@ -44,8 +44,9 @@ export async function getCachedPrivateKey(
 }
 
 /**
- * Create a new XMTP identity: generate a recovery phrase, derive the
- * private key from it, and cache the key in the keychain/file.
+ * Create a new XMTP identity: generate a recovery phrase and derive the
+ * private key from it. The key is NOT cached yet — the caller must call
+ * commitIdentity() after the user has confirmed the recovery phrase.
  *
  * Returns both the recovery phrase (which the user must save) and the
  * derived private key.
@@ -56,8 +57,19 @@ export async function createNewIdentity(
 ): Promise<{ recoveryPhrase: string; privateKey: `0x${string}` }> {
   const recoveryPhrase = generateRecoveryPhrase();
   const privateKey = derivePrivateKey(recoveryPhrase, did);
-  await storeKey(handle, privateKey);
   return { recoveryPhrase, privateKey };
+}
+
+/**
+ * Persist a newly-created XMTP private key after the user has confirmed
+ * their recovery phrase. Must be called after createNewIdentity() once the
+ * user has acknowledged and verified the phrase.
+ */
+export async function commitIdentity(
+  handle: string,
+  privateKey: `0x${string}`,
+): Promise<void> {
+  await storeKey(handle, privateKey);
 }
 
 /**

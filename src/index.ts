@@ -7,6 +7,7 @@ import {
   createXmtpClient,
   getCachedPrivateKey,
   createNewIdentity,
+  commitIdentity,
   recoverIdentity,
   importRawKey,
   migrateLegacyIdentity,
@@ -168,6 +169,7 @@ program
       bsky.did,
     );
     privateKey = newKey;
+    // NOTE: key is NOT cached yet — we wait until the user confirms the phrase.
 
     console.log("========================================");
     console.log("  YOUR RECOVERY PHRASE");
@@ -196,6 +198,10 @@ program
     } else {
       console.log("Phrase confirmed!");
     }
+
+    // Key is committed to storage only after the user has seen (and had the
+    // opportunity to confirm) the recovery phrase.
+    await commitIdentity(bsky.handle, privateKey);
 
     const xmtp = await createXmtpClient(config, privateKey);
     console.log(`XMTP Inbox ID: ${xmtp.inboxId}`);
