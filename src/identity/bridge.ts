@@ -23,6 +23,46 @@ function getPdsEndpoint(didDoc: Record<string, unknown>): string | null {
   return null;
 }
 
+// ─── Shared PDS record fetcher ───────────────────────────────────────────────
+
+/**
+ * Fetch a record from a user's PDS, trying the resolved PDS first and
+ * falling back to the caller's agent.
+ *
+ * @param agent   - Authenticated AtpAgent (used for PDS resolution + fallback)
+ * @param did     - Target user's DID
+ * @param collection - ATProto collection name (e.g. "community.maverick.inbox")
+ * @param extract - Function to extract the desired fields from the raw record
+ *                  value. Return null to signal the record is invalid/incomplete.
+ * @returns The extracted value, or null if the record doesn't exist or is invalid.
+ */
+export async function fetchPdsRecord<T>(
+  agent: AtpAgent,
+  did: string,
+  collection: string,
+  extract: (value: Record<string, unknown>) => T | null,
+): Promise<T | null> {
+  const pdsUrl = await resolvePds(agent, did);
+  const agents: AtpAgent[] = [];
+  if (pdsUrl) agents.push(new AtpAgent({ service: pdsUrl }));
+  agents.push(agent);
+
+  for (const a of agents) {
+    try {
+      const response = await a.com.atproto.repo.getRecord({
+        repo: did,
+        collection,
+        rkey: "self",
+      });
+      const result = extract(response.data.value as Record<string, unknown>);
+      if (result) return result;
+    } catch {
+      /* next agent */
+    }
+  }
+  return null;
+}
+
 // ─── Maverick-specific PDS record (community.maverick.inbox) ─────────────────
 
 /**
@@ -59,70 +99,17 @@ export async function getMaverickRecord(
   agent: AtpAgent,
   did: string,
 ): Promise<{ inboxId: string; createdAt: string } | null> {
-  const pdsUrl = await resolvePds(agent, did);
-
-  const agents: AtpAgent[] = [];
-  if (pdsUrl) {
-    agents.push(new AtpAgent({ service: pdsUrl }));
-  }
-  agents.push(agent);
-
-  for (const a of agents) {
-    try {
-      const response = await a.com.atproto.repo.getRecord({
-        repo: did,
-        collection: "community.maverick.inbox",
-        rkey: "self",
-      });
-      const record = response.data.value as {
-        inboxId?: string;
-        createdAt?: string;
-      };
-      if (!record.inboxId) return null;
-      return {
-        inboxId: record.inboxId,
-        createdAt: record.createdAt ?? "",
-      };
-    } catch {
-      // Try the next agent
-    }
-  }
-
-  return null;
+  return fetchPdsRecord(agent, did, "community.maverick.inbox", (value) => {
+    const inboxId = value.inboxId;
+    if (typeof inboxId !== "string" || !inboxId) return null;
+    return {
+      inboxId,
+      createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+    };
+  });
 }
 
 // ─── Legacy PDS record (org.xmtp.inbox) ─────────────────────────────────────
-
-/**
- * Publish an `org.xmtp.inbox` record on the user's PDS.
- *
- * This is the legacy/cross-app identity bridge record used by bluesky-chat,
- * Converse, and other XMTP apps. Kept for backward compatibility.
- */
-export async function publishLegacyInboxRecord(
-  agent: AtpAgent,
-  xmtpClient: Client,
-): Promise<void> {
-  const did = agent.session!.did;
-
-  // Sign the DID with XMTP installation key to prove ownership
-  const signatureBytes = xmtpClient.signWithInstallationKey(did);
-  const verificationSignature =
-    Buffer.from(signatureBytes).toString("base64");
-
-  // Publish to the user's PDS
-  await agent.com.atproto.repo.putRecord({
-    repo: did,
-    collection: "org.xmtp.inbox",
-    rkey: "self",
-    record: {
-      $type: "org.xmtp.inbox",
-      id: xmtpClient.inboxId,
-      verificationSignature,
-      createdAt: new Date().toISOString(),
-    },
-  });
-}
 
 /**
  * Read an `org.xmtp.inbox` record from a user's PDS.
@@ -138,42 +125,23 @@ export async function getLegacyInboxRecord(
   verificationSignature: string;
   createdAt: string;
 } | null> {
-  // Resolve the target user's PDS so we can query it directly.
-  // The bsky.social entryway may not proxy getRecord for custom collections
-  // when the caller is authenticated on a different PDS.
-  const pdsUrl = await resolvePds(agent, did);
-
-  // Try target PDS first (unauthenticated), then caller's agent as fallback
-  const agents: AtpAgent[] = [];
-  if (pdsUrl) {
-    agents.push(new AtpAgent({ service: pdsUrl }));
-  }
-  agents.push(agent);
-
-  for (const a of agents) {
-    try {
-      const response = await a.com.atproto.repo.getRecord({
-        repo: did,
-        collection: "org.xmtp.inbox",
-        rkey: "self",
-      });
-      const record = response.data.value as {
-        id?: string;
-        verificationSignature?: string;
-        createdAt?: string;
-      };
-      if (!record.id || !record.verificationSignature) return null;
-      return {
-        inboxId: record.id,
-        verificationSignature: record.verificationSignature,
-        createdAt: record.createdAt ?? "",
-      };
-    } catch {
-      // Try the next agent
+  return fetchPdsRecord(agent, did, "org.xmtp.inbox", (value) => {
+    const id = value.id;
+    const verificationSignature = value.verificationSignature;
+    if (
+      typeof id !== "string" ||
+      !id ||
+      typeof verificationSignature !== "string" ||
+      !verificationSignature
+    ) {
+      return null;
     }
-  }
-
-  return null;
+    return {
+      inboxId: id,
+      verificationSignature,
+      createdAt: typeof value.createdAt === "string" ? value.createdAt : "",
+    };
+  });
 }
 
 // ─── Internal helpers ────────────────────────────────────────────────────────
