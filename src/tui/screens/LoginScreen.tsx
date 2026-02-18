@@ -310,60 +310,14 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         return;
       }
 
-      // Step 2: Publish bridge
-      setStep(2);
-      const { publishMaverickRecord } = await import("../../identity/bridge.js");
-      await publishMaverickRecord(bskyResult.agent, xmtpClient);
-
-      // Step 3: Set up database
-      setStep(3);
-      const { createDatabase } = await import("../../storage/db.js");
-      const db = createDatabase(bskyResult.config.sqlitePath);
-
-      const { CommunityManager } = await import("../../community/manager.js");
-      const manager = new CommunityManager(xmtpClient, db);
-
-      // Cache profile
-      const { upsertProfile } = await import("../../storage/profiles.js");
-      upsertProfile(db, {
-        did: bskyResult.did,
-        inboxId: xmtpClient.inboxId,
-        handle: bskyResult.handle,
-      });
-
-      // Step 4: Recover communities
-      setStep(4);
-      try {
-        await manager.recoverAllCommunities();
-      } catch {
-        // Non-fatal
-      }
-
-      // Persist session
-      try {
-        const { saveSession } = await import("../../storage/session.js");
-        saveSession(bskyResult.handle, bskyResult.password);
-      } catch {
-        // Non-fatal
-      }
-
-      setStatus("success");
-
-      onLogin({
-        xmtpClient,
-        db,
-        handle: bskyResult.handle,
-        did: bskyResult.did,
-        agent: bskyResult.agent,
-        privateKey,
-        manager,
-      });
+      // Delegate remaining steps (publish bridge, DB, recovery, session) to finishLogin
+      await finishLogin(bskyResult.config, bskyResult, privateKey, bskyResult.password, true);
     } catch (err) {
       setStatus("phraseEntry");
       setPhraseError(err instanceof Error ? err.message : String(err));
       setPhraseInput("");
     }
-  }, [bskyResult, phraseInput, existingInboxId, onLogin]);
+  }, [bskyResult, phraseInput, existingInboxId, finishLogin]);
 
   // ── Auto-login on mount ──────────────────────────────────────────────
   useEffect(() => {
@@ -506,13 +460,14 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
     </Box>
   );
 
-  // ── Render: phrase confirm (new user types phrase back) ──────────────
-  const renderPhraseConfirm = () => (
+  // ── Render: shared phrase input (confirm / recovery entry) ───────────
+  const renderPhraseInput = (
+    header: React.ReactNode,
+    actionLabel: string,
+  ) => (
     <Box flexDirection="column" paddingX={1}>
-      <Box marginBottom={1}>
-        <Text color={theme.textSecondary}>
-          Confirm your recovery phrase:
-        </Text>
+      <Box marginBottom={1} flexDirection="column">
+        {header}
       </Box>
 
       <Box
@@ -541,7 +496,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
       <Box marginTop={1} gap={2}>
         <Box>
           <Text color={theme.muted}>Enter</Text>
-          <Text color={theme.dim}>:confirm</Text>
+          <Text color={theme.dim}>:{actionLabel}</Text>
         </Box>
         <Box>
           <Text color={theme.muted}>Esc</Text>
@@ -551,53 +506,26 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
     </Box>
   );
 
-  // ── Render: phrase entry (returning user) ────────────────────────────
-  const renderPhraseEntry = () => (
-    <Box flexDirection="column" paddingX={1}>
-      <Box marginBottom={1} flexDirection="column">
+  const renderPhraseConfirm = () =>
+    renderPhraseInput(
+      <Text color={theme.textSecondary}>
+        Confirm your recovery phrase:
+      </Text>,
+      "confirm",
+    );
+
+  const renderPhraseEntry = () =>
+    renderPhraseInput(
+      <>
         <Text color={theme.yellow}>
           Existing Maverick identity found.
         </Text>
         <Text color={theme.textSecondary}>
           Enter your recovery phrase to restore:
         </Text>
-      </Box>
-
-      <Box
-        flexDirection="column"
-        borderStyle="round"
-        borderColor={theme.border}
-        paddingX={1}
-        paddingY={0}
-      >
-        <TextInput
-          label="Phrase"
-          value={phraseInput}
-          onChange={setPhraseInput}
-          active={true}
-          placeholder="word1 word2 word3 word4 word5 word6"
-        />
-      </Box>
-
-      {phraseError && (
-        <Box marginTop={1} gap={1}>
-          <Text color={theme.red}>{sym.dot}</Text>
-          <Text color={theme.red}>{phraseError}</Text>
-        </Box>
-      )}
-
-      <Box marginTop={1} gap={2}>
-        <Box>
-          <Text color={theme.muted}>Enter</Text>
-          <Text color={theme.dim}>:recover</Text>
-        </Box>
-        <Box>
-          <Text color={theme.muted}>Esc</Text>
-          <Text color={theme.dim}>:cancel</Text>
-        </Box>
-      </Box>
-    </Box>
-  );
+      </>,
+      "recover",
+    );
 
   // ── Render: success ──────────────────────────────────────────────────
   const renderSuccess = () => (
@@ -666,6 +594,16 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
     </Box>
   );
 
+  // ── Content selector ─────────────────────────────────────────────────
+  function renderContent() {
+    if (status === "authenticating" || status === "recovering") return renderSteps();
+    if (status === "phraseDisplay") return renderPhraseDisplay();
+    if (status === "phraseConfirm") return renderPhraseConfirm();
+    if (status === "phraseEntry") return renderPhraseEntry();
+    if (status === "success") return renderSuccess();
+    return renderForm();
+  }
+
   // ── Main render ──────────────────────────────────────────────────────
   return (
     <Box flexDirection="column" padding={1}>
@@ -685,12 +623,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         </Text>
       </Box>
 
-      {(status === "authenticating" || status === "recovering") ? renderSteps()
-        : status === "phraseDisplay" ? renderPhraseDisplay()
-        : status === "phraseConfirm" ? renderPhraseConfirm()
-        : status === "phraseEntry" ? renderPhraseEntry()
-        : status === "success" ? renderSuccess()
-        : renderForm()}
+      {renderContent()}
     </Box>
   );
 }
