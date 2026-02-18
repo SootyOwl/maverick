@@ -54,16 +54,54 @@ function keyringAccount(handle: string): string {
 
 // ── Keyring backend ──────────────────────────────────────────────────────
 
+// Persist keyring availability across process restarts to avoid probing the
+// OS keychain on every cold start (which can trigger unlock prompts).
+// Cache file: <keysDir>/.keyring_ok  — "1" available, "0" unavailable.
+
+function keyringCachePath(): string {
+  return join(getKeysDir(), ".keyring_ok");
+}
+
+function readKeyringCache(): boolean | null {
+  try {
+    const raw = readFileSync(keyringCachePath(), "utf-8").trim();
+    if (raw === "1") return true;
+    if (raw === "0") return false;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeKeyringCache(available: boolean): void {
+  try {
+    ensureKeysDir();
+    writeFileSync(keyringCachePath(), available ? "1" : "0", { mode: 0o600 });
+  } catch {
+    /* best effort */
+  }
+}
+
 function keyringAvailable(): boolean {
   if (process.env.__MAVERICK_KEYRING_DISABLE === "1") {
     return false;
   }
+
+  // Check file cache before touching the OS keychain
+  const cached = readKeyringCache();
+  if (cached !== null) {
+    return cached;
+  }
+
+  // First run: probe once, then persist the result
   try {
     const probe = new Entry(SERVICE, "__probe__");
     probe.setPassword("ok");
     probe.deletePassword();
+    writeKeyringCache(true);
     return true;
   } catch {
+    writeKeyringCache(false);
     return false;
   }
 }
@@ -90,6 +128,8 @@ function warnFallback(): void {
 export function _resetKeyringCache(): void {
   _keyringOk = undefined;
   _warnedFallback = false;
+  // Also remove the on-disk cache so probe re-runs in the next test
+  try { unlinkSync(keyringCachePath()); } catch { /* may not exist */ }
 }
 
 function saveToKeyring(handle: string, key: string): void {
