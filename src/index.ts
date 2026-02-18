@@ -1,22 +1,29 @@
 import { Command } from "commander";
-import { existsSync, mkdirSync } from "node:fs";
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { privateKeyToAccount } from "viem/accounts";
 import { loadConfig } from "./config.js";
 import { createBlueskySession } from "./identity/atproto.js";
+import {
+  publishMaverickRecord,
+  getMaverickRecord,
+  getLegacyInboxRecord,
+} from "./identity/bridge.js";
+import { normalizePhrase, validateRecoveryPhrase } from "./identity/recovery-phrase.js";
+import {
+  resolveHandleToInbox,
+  verifyInboxAssociation,
+} from "./identity/resolver.js";
 import {
   createXmtpClient,
   getCachedPrivateKey,
   createNewIdentity,
   commitIdentity,
   recoverIdentity,
-  importRawKey,
   migrateLegacyIdentity,
 } from "./identity/xmtp.js";
-import { publishMaverickRecord, getMaverickRecord } from "./identity/bridge.js";
-import {
-  resolveHandleToInbox,
-  verifyInboxAssociation,
-} from "./identity/resolver.js";
 import { createDatabase } from "./storage/db.js";
 import { CommunityManager } from "./community/manager.js";
 import {
@@ -31,6 +38,7 @@ import { insertMessage, insertParents } from "./storage/messages.js";
 import { saveSession, clearSession } from "./storage/session.js";
 import { sanitize } from "./utils/sanitize.js";
 import type { Client } from "@xmtp/node-sdk";
+import type { AtpAgent } from "@atproto/api";
 import type { Config } from "./config.js";
 import type { BlueskySession } from "./identity/atproto.js";
 
@@ -79,6 +87,35 @@ async function bootstrap(): Promise<{
   return { config, bsky, xmtp, privateKey };
 }
 
+// ─── Shared utilities ────────────────────────────────────────────────────
+
+function createPrompt(): { ask: (q: string) => Promise<string>; close: () => void } {
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  return {
+    ask: (q) => new Promise<string>((resolve) => rl.question(q, resolve)),
+    close: () => rl.close(),
+  };
+}
+
+async function recoverAndFinish(
+  config: Config,
+  bsky: { agent: AtpAgent; did: string; handle: string },
+  xmtp: Client,
+): Promise<void> {
+  const db = createDatabase(config.sqlitePath);
+  const manager = new CommunityManager(xmtp, db);
+  const result = await manager.recoverAllCommunities({
+    onProgress: (msg) => console.log(`  ${msg}`),
+  });
+  console.log(
+    `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
+  );
+  db.close();
+
+  await publishMaverickRecord(bsky.agent, xmtp);
+  saveSession(bsky.handle, config.bluesky.password);
+}
+
 // ─── login ────────────────────────────────────────────────────────────────
 
 program
@@ -116,8 +153,7 @@ program
     // 3. Check PDS for community.maverick.inbox (returning user detection)
     const existingRecord = await getMaverickRecord(bsky.agent, bsky.did);
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+    const prompt = createPrompt();
 
     if (existingRecord) {
       // Returning user — prompt for recovery phrase
@@ -125,7 +161,7 @@ program
       console.log(`Inbox ID: ${existingRecord.inboxId}`);
       console.log("Enter your recovery phrase to restore access.\n");
 
-      const phrase = await ask("Recovery phrase: ");
+      const phrase = await prompt.ask("Recovery phrase: ");
       privateKey = await recoverIdentity(bsky.handle, bsky.did, phrase);
       const xmtp = await createXmtpClient(config, privateKey);
 
@@ -137,26 +173,14 @@ program
         console.error(
           "Wrong recovery phrase. Try again or use `maverick login` with the correct phrase.",
         );
-        rl.close();
+        prompt.close();
         process.exit(1);
       }
 
       console.log(`Recovered! Inbox ID: ${xmtp.inboxId}`);
 
-      // Recover communities
-      const db = createDatabase(config.sqlitePath);
-      const manager = new CommunityManager(xmtp, db);
-      const result = await manager.recoverAllCommunities({
-        onProgress: (msg) => console.log(`  ${msg}`),
-      });
-      console.log(
-        `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
-      );
-      db.close();
-
-      await publishMaverickRecord(bsky.agent, xmtp);
-      saveSession(bsky.handle, config.bluesky.password);
-      rl.close();
+      await recoverAndFinish(config, bsky, xmtp);
+      prompt.close();
       console.log("Login complete!");
       return;
     }
@@ -180,13 +204,12 @@ program
     console.log("========================================\n");
 
     // Confirm phrase
-    const confirmed = await ask("Type your recovery phrase to confirm: ");
-    const { normalizePhrase } = await import("./identity/recovery-phrase.js");
+    const confirmed = await prompt.ask("Type your recovery phrase to confirm: ");
     if (normalizePhrase(confirmed) !== normalizePhrase(recoveryPhrase)) {
       console.error("\nPhrase does not match! Please try again.");
       console.error(`Expected ${recoveryPhrase.split(" ").length} words.`);
       // Let them retry
-      const retry = await ask("Type your recovery phrase to confirm: ");
+      const retry = await prompt.ask("Type your recovery phrase to confirm: ");
       if (normalizePhrase(retry) !== normalizePhrase(recoveryPhrase)) {
         console.error(
           "\nPhrase still does not match. Your identity has been created.",
@@ -208,7 +231,7 @@ program
 
     await publishMaverickRecord(bsky.agent, xmtp);
     saveSession(bsky.handle, config.bluesky.password);
-    rl.close();
+    prompt.close();
     console.log("\nLogin complete!");
   });
 
@@ -224,14 +247,12 @@ program
 
     console.log(`Authenticated as ${bsky.handle} (${bsky.did})`);
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+    const prompt = createPrompt();
 
-    const phrase = await ask("Recovery phrase: ");
-    const { validateRecoveryPhrase } = await import("./identity/recovery-phrase.js");
+    const phrase = await prompt.ask("Recovery phrase: ");
     if (!validateRecoveryPhrase(phrase)) {
       console.error("Invalid recovery phrase. Must be 6 words from the EFF Diceware wordlist.");
-      rl.close();
+      prompt.close();
       return;
     }
 
@@ -257,21 +278,9 @@ program
       // Non-fatal — installation count is informational
     }
 
-    // Recover communities
-    const db = createDatabase(config.sqlitePath);
-    const manager = new CommunityManager(xmtp, db);
     console.log("\nRecovering communities...");
-    const result = await manager.recoverAllCommunities({
-      onProgress: (msg) => console.log(`  ${msg}`),
-    });
-    console.log(
-      `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
-    );
-    db.close();
-
-    await publishMaverickRecord(bsky.agent, xmtp);
-    saveSession(bsky.handle, config.bluesky.password);
-    rl.close();
+    await recoverAndFinish(config, bsky, xmtp);
+    prompt.close();
     console.log("\nRecovery complete!");
   });
 
@@ -470,7 +479,6 @@ program
 
     // Verify it's a valid secp256k1 private key
     try {
-      const { privateKeyToAccount } = await import("viem/accounts");
       privateKeyToAccount(key as `0x${string}`);
     } catch {
       console.error("Invalid private key. The value is not a valid secp256k1 key.");
@@ -481,7 +489,7 @@ program
     mkdirSync(config.dataDir, { recursive: true });
     const bsky = await createBlueskySession(config);
 
-    await importRawKey(bsky.handle, key as `0x${string}`);
+    await commitIdentity(bsky.handle, key as `0x${string}`);
     const xmtp = await createXmtpClient(config, key as `0x${string}`);
 
     console.log(`Imported key for ${bsky.handle}`);
@@ -499,10 +507,6 @@ program
   .description("Create an encrypted backup of XMTP and Maverick databases")
   .argument("[path]", "Output file path", "maverick-backup.enc")
   .action(async (outputPath: string) => {
-    const { createCipheriv, randomBytes, scryptSync } = await import("node:crypto");
-    const { readFileSync, writeFileSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
-
     const config = loadConfig();
 
     // Check that databases exist
@@ -512,25 +516,24 @@ program
       process.exit(1);
     }
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+    const prompt = createPrompt();
 
     console.log("Create an encrypted backup of your Maverick data.");
     console.log("You'll need the passphrase to restore this backup.\n");
 
-    const passphrase = await ask("Backup passphrase: ");
+    const passphrase = await prompt.ask("Backup passphrase: ");
     if (passphrase.length < 8) {
       console.error("Passphrase must be at least 8 characters.");
-      rl.close();
+      prompt.close();
       process.exit(1);
     }
-    const confirm = await ask("Confirm passphrase: ");
+    const confirm = await prompt.ask("Confirm passphrase: ");
     if (passphrase !== confirm) {
       console.error("Passphrases do not match.");
-      rl.close();
+      prompt.close();
       process.exit(1);
     }
-    rl.close();
+    prompt.close();
 
     // Read database files
     const xmtpDb = readFileSync(config.xmtp.dbPath);
@@ -581,10 +584,6 @@ program
   .description("Restore Maverick databases from an encrypted backup")
   .argument("<path>", "Path to backup file")
   .action(async (inputPath: string) => {
-    const { createDecipheriv, scryptSync } = await import("node:crypto");
-    const { readFileSync, writeFileSync, chmodSync } = await import("node:fs");
-    const { resolve } = await import("node:path");
-
     const config = loadConfig();
     mkdirSync(config.dataDir, { recursive: true });
 
@@ -596,22 +595,20 @@ program
 
     // Warn if databases already exist
     if (existsSync(config.xmtp.dbPath) || existsSync(config.sqlitePath)) {
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
-      const answer = await ask(
+      const confirmPrompt = createPrompt();
+      const answer = await confirmPrompt.ask(
         "Existing databases found. Restoring will overwrite them. Continue? [y/N] ",
       );
-      rl.close();
+      confirmPrompt.close();
       if (answer.toLowerCase() !== "y") {
         console.log("Restore cancelled.");
         return;
       }
     }
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
-    const passphrase = await ask("Backup passphrase: ");
-    rl.close();
+    const prompt = createPrompt();
+    const passphrase = await prompt.ask("Backup passphrase: ");
+    prompt.close();
 
     const data = readFileSync(resolvedPath);
     let offset = 0;
@@ -696,7 +693,6 @@ program
     console.log(`DID:      ${result.did}`);
     console.log(`Inbox ID: ${result.inboxId}`);
 
-    const { getLegacyInboxRecord } = await import("./identity/bridge.js");
     const record = await getLegacyInboxRecord(bsky.agent, result.did);
     if (record) {
       const valid = await verifyInboxAssociation(
