@@ -1,15 +1,13 @@
 import { Client, type Signer } from "@xmtp/node-sdk";
 import { IdentifierKind } from "@xmtp/node-sdk";
 import { createHmac } from "node:crypto";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
 import { toBytes } from "viem";
 import type { Config } from "../config.js";
 import { getStoredKey, storeKey, migrateLegacyKey } from "../storage/keys.js";
 import { generateRecoveryPhrase, derivePrivateKey } from "./recovery-phrase.js";
 import { MetaMessageCodec } from "../community/meta-codec.js";
 import { MaverickMessageCodec } from "../messaging/codec.js";
-
-export { generatePrivateKey };
 
 export function createEOASigner(privateKey: `0x${string}`): Signer {
   const account = privateKeyToAccount(privateKey);
@@ -36,11 +34,7 @@ export function createEOASigner(privateKey: `0x${string}`): Signer {
 export async function getCachedPrivateKey(
   handle: string,
 ): Promise<`0x${string}` | null> {
-  const stored = await getStoredKey(handle);
-  if (stored) {
-    return stored as `0x${string}`;
-  }
-  return null;
+  return (await getStoredKey(handle)) as `0x${string}` | null;
 }
 
 /**
@@ -52,7 +46,7 @@ export async function getCachedPrivateKey(
  * derived private key.
  */
 export async function createNewIdentity(
-  handle: string,
+  _handle: string,
   did: string,
 ): Promise<{ recoveryPhrase: string; privateKey: `0x${string}` }> {
   const recoveryPhrase = generateRecoveryPhrase();
