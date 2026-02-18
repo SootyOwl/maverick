@@ -11,3 +11,4 @@ data-*/
 *.key
 /.mcp.json
 /.pnpm-store
+.chainlink/issues.db
