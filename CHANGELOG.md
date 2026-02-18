@@ -19,6 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Implement Tasks 8-11: Community Manager, Messaging, Invites, CLI (#1)
 
 ### Fixed
+- use 12-byte IV for AES-256-GCM backup encryption (#4)
+- cache keyring probe result across process restarts (#3)
+- defer key storage until after recovery phrase confirmed (#2)
 - Fix recoverAllCommunities: reorder sync + add polling loop (#29)
 - Fix newline artifact on first character in composer (#23)
 - Fix password stars rendering vertically on paste (#22)

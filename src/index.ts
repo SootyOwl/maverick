@@ -539,8 +539,9 @@ program
       : Buffer.alloc(0);
 
     // Encrypt: scrypt key derivation + AES-256-GCM
+    // 12-byte (96-bit) IV per NIST SP 800-38D recommendation for GCM.
     const salt = randomBytes(32);
-    const iv = randomBytes(16);
+    const iv = randomBytes(12);
     const key = scryptSync(passphrase, salt, 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
     const cipher = createCipheriv("aes-256-gcm", key, iv);
 
@@ -552,9 +553,10 @@ program
     const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const authTag = cipher.getAuthTag();
 
-    // File format: [header JSON + newline] [salt 32B] [iv 16B] [authTag 16B] [encrypted]
+    // File format: [header JSON + newline] [salt 32B] [iv 12B] [authTag 16B] [encrypted]
+    // Version 2 uses a 12-byte IV (version 1 used 16 bytes).
     const header = JSON.stringify({
-      version: 1,
+      version: 2,
       createdAt: new Date().toISOString(),
       xmtpDbSize: xmtpDb.length,
       maverickDbSize: maverickDb.length,
@@ -621,16 +623,18 @@ program
     offset += headerLen;
     const header = JSON.parse(headerStr);
 
-    if (header.version !== 1) {
+    if (header.version !== 1 && header.version !== 2) {
       console.error(`Unsupported backup version: ${header.version}`);
       process.exit(1);
     }
 
     // Read crypto params
+    // v1 used a 16-byte IV; v2 uses 12 bytes (NIST SP 800-38D recommended).
+    const ivSize = header.version === 1 ? 16 : 12;
     const salt = data.subarray(offset, offset + 32);
     offset += 32;
-    const iv = data.subarray(offset, offset + 16);
-    offset += 16;
+    const iv = data.subarray(offset, offset + ivSize);
+    offset += ivSize;
     const authTag = data.subarray(offset, offset + 16);
     offset += 16;
     const encrypted = data.subarray(offset);
