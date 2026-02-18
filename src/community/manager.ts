@@ -335,28 +335,79 @@ export class CommunityManager {
   /**
    * Recovers all communities after key restoration on a new device.
    *
-   * Performs a full network sync to discover all groups the user belongs to,
-   * then replays each community's meta channel to rebuild the local cache.
-   * Optionally requests message history from other installations.
+   * Sends a history sync request to other installations first, then polls
+   * with syncAll() until communities appear or the timeout expires.
+   * Finally replays each community's meta channel to rebuild the local cache.
    *
    * Individual community sync failures are logged but do not abort the
    * overall recovery process.
+   *
+   * @param options.onProgress - Optional callback for progress updates
+   * @param options.pollTimeoutMs - Max time to poll for communities (default 60s)
+   * @param options.pollIntervalMs - Interval between poll attempts (default 3s)
    */
-  async recoverAllCommunities(): Promise<{
+  async recoverAllCommunities(options?: {
+    onProgress?: (message: string) => void;
+    pollTimeoutMs?: number;
+    pollIntervalMs?: number;
+  }): Promise<{
     communities: { groupId: string; name: string }[];
     channelsRecovered: number;
     historyRequested: boolean;
   }> {
-    // 1. Full sync of all groups + messages from the XMTP network
+    const log = options?.onProgress ?? (() => {});
+    const pollTimeout = options?.pollTimeoutMs ?? 60_000;
+    const pollInterval = options?.pollIntervalMs ?? 3_000;
+
+    // 1. Request history sync from other installations FIRST.
+    //    This tells existing installations to upload their data so we can
+    //    pull it in subsequent syncAll() calls.
+    let historyRequested = false;
+    try {
+      log("Requesting history from other installations...");
+      await this.xmtpClient.sendSyncRequest();
+      historyRequested = true;
+    } catch {
+      // sendSyncRequest may fail if no other installations exist or
+      // the method is unavailable — this is non-fatal for recovery.
+      log("No other installations found for history sync.");
+    }
+
+    // 2. Initial sync — may already find groups if the installation was
+    //    quickly welcomed into existing conversations.
+    log("Syncing conversations from network...");
     await this.xmtpClient.conversations.syncAll();
+    let communities = await this.listCommunities();
 
-    // 2. Discover meta channels (communities we belong to)
-    const communities = await this.listCommunities();
+    // 3. If no communities found and we sent a sync request, poll —
+    //    history sync is async and the other installation needs time to
+    //    process the request, create a payload, upload it, and send a reply.
+    if (communities.length === 0 && historyRequested) {
+      log("Waiting for history sync from other installations...");
+      const deadline = Date.now() + pollTimeout;
+      let attempt = 0;
 
-    // 3. For each community, replay meta channel to rebuild local cache
+      while (communities.length === 0 && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        attempt++;
+        log(`Polling for communities (attempt ${attempt})...`);
+        await this.xmtpClient.conversations.syncAll();
+        communities = await this.listCommunities();
+      }
+
+      if (communities.length === 0) {
+        log(
+          "No communities found after waiting. " +
+            "Ensure another installation is online, or try `maverick recover` again later.",
+        );
+      }
+    }
+
+    // 4. For each discovered community, replay meta channel to rebuild local cache
     let channelsRecovered = 0;
     for (const community of communities) {
       try {
+        log(`Syncing community "${community.name}"...`);
         const state = await this.syncCommunityState(community.groupId);
         for (const [, ch] of state.channels) {
           if (!ch.archived) {
@@ -369,16 +420,6 @@ export class CommunityManager {
           err,
         );
       }
-    }
-
-    // 4. Request message history from other installations
-    let historyRequested = false;
-    try {
-      await this.xmtpClient.sendSyncRequest();
-      historyRequested = true;
-    } catch {
-      // sendSyncRequest may fail if no other installations exist or
-      // the method is unavailable — this is non-fatal for recovery.
     }
 
     return { communities, channelsRecovered, historyRequested };

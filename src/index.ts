@@ -145,8 +145,9 @@ program
       // Recover communities
       const db = createDatabase(config.sqlitePath);
       const manager = new CommunityManager(xmtp, db);
-      console.log("Recovering communities...");
-      const result = await manager.recoverAllCommunities();
+      const result = await manager.recoverAllCommunities({
+        onProgress: (msg) => console.log(`  ${msg}`),
+      });
       console.log(
         `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
       );
@@ -254,13 +255,12 @@ program
     const db = createDatabase(config.sqlitePath);
     const manager = new CommunityManager(xmtp, db);
     console.log("\nRecovering communities...");
-    const result = await manager.recoverAllCommunities();
+    const result = await manager.recoverAllCommunities({
+      onProgress: (msg) => console.log(`  ${msg}`),
+    });
     console.log(
       `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
     );
-    if (result.historyRequested) {
-      console.log("Message history sync requested from other installations.");
-    }
     db.close();
 
     await publishMaverickRecord(bsky.agent, xmtp);
