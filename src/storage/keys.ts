@@ -9,6 +9,7 @@ import {
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createDecipheriv, scryptSync } from "node:crypto";
+import { SCRYPT_PARAMS } from "../utils/crypto-constants.js";
 
 // Key storage with OS keychain (primary) + plaintext 0600 file (fallback).
 //
@@ -183,10 +184,13 @@ function clearFile(handle: string): void {
 
 // ── Legacy decryption (old passphrase-encrypted format) ──────────────────
 
-const SCRYPT_OPTIONS = { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
-
 function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return scryptSync(passphrase, salt, 32, SCRYPT_OPTIONS) as Buffer;
+  return scryptSync(passphrase, salt, SCRYPT_PARAMS.keyLen, {
+    N: SCRYPT_PARAMS.N,
+    r: SCRYPT_PARAMS.r,
+    p: SCRYPT_PARAMS.p,
+    maxmem: SCRYPT_PARAMS.maxmem,
+  }) as Buffer;
 }
 
 function decryptEncrypted(stored: string, passphrase: string): string | null {

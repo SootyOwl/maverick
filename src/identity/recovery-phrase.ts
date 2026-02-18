@@ -1,13 +1,7 @@
 import { randomBytes, scryptSync } from "node:crypto";
 import { privateKeyToAccount } from "viem/accounts";
 import { WORDLIST } from "./wordlist.js";
-
-// scrypt parameters — same as keys.ts: N=2^17 (131072), r=8, p=1
-const SCRYPT_N = 131072;
-const SCRYPT_R = 8;
-const SCRYPT_P = 1;
-const SCRYPT_MAXMEM = 256 * 1024 * 1024;
-const SCRYPT_KEY_LEN = 32;
+import { SCRYPT_PARAMS } from "../utils/crypto-constants.js";
 
 const PHRASE_WORD_COUNT = 6;
 
@@ -79,11 +73,11 @@ export function derivePrivateKey(
 
   for (let counter = 0; counter < MAX_DERIVE_ATTEMPTS; counter++) {
     const input = counter === 0 ? normalized : `${normalized}\x00${counter}`;
-    const derived = scryptSync(input, did, SCRYPT_KEY_LEN, {
-      N: SCRYPT_N,
-      r: SCRYPT_R,
-      p: SCRYPT_P,
-      maxmem: SCRYPT_MAXMEM,
+    const derived = scryptSync(input, did, SCRYPT_PARAMS.keyLen, {
+      N: SCRYPT_PARAMS.N,
+      r: SCRYPT_PARAMS.r,
+      p: SCRYPT_PARAMS.p,
+      maxmem: SCRYPT_PARAMS.maxmem,
     }) as Buffer;
 
     const hex = `0x${derived.toString("hex")}` as `0x${string}`;
