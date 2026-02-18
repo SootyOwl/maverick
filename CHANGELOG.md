@@ -13,11 +13,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fix critical and high priority issues found in adversarial review (#4)
 
 ### Added
+- Add backup and restore CLI commands wrapping XMTP archive API (#30)
 - Add JSON-aware config merge script for host Claude config layering (#18)
 - Mount local ~/.claude config into devcontainer as bind mount (#17)
 - Implement Tasks 8-11: Community Manager, Messaging, Invites, CLI (#1)
 
 ### Fixed
+- Fix recoverAllCommunities: reorder sync + add polling loop (#29)
 - Fix newline artifact on first character in composer (#23)
 - Fix password stars rendering vertically on paste (#22)
 - Gate channel create and invite actions behind admin role check (#21)
@@ -28,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Fix env var loading + add integration tests with mocks (#2)
 
 ### Changed
+- Research XMTP network recovery after config loss (#27)
 - Write README.md for the project (#16)
 - Move maverick/ subdirectory to repo root for npm git install support (#14)
 - Adversarial review: fix critical, high, and medium priority issues (#13)
