@@ -9,7 +9,7 @@ Private community chat in the terminal. Your Bluesky handle is your identity, XM
 - A **meta channel** (an XMTP group) acts as the encrypted control plane for community config
 - **Multi-parent threading** lets you reply to multiple messages at once
 
-The only public data is an `org.xmtp.inbox` record on your PDS linking your Bluesky DID to your XMTP Inbox ID. All community structure, membership, channels, and messages are encrypted inside XMTP groups.
+The only public data is a `community.maverick.inbox` record on your PDS linking your Bluesky DID to your XMTP Inbox ID. All community structure, membership, channels, and messages are encrypted inside XMTP groups.
 
 ## Quick start
 
@@ -47,6 +47,62 @@ cp .env.example .env
 | `MAVERICK_XMTP_ENV` | `dev` or `production` (default: `dev`) |
 | `MAVERICK_DATA_DIR` | Data directory (default: `~/.maverick`) |
 
+## CLI commands
+
+### Identity & authentication
+
+```
+maverick login                          Authenticate + set up or recover XMTP identity
+maverick recover                        Recover identity from a recovery phrase
+maverick logout                         Clear saved credentials
+maverick whoami                         Show current identity info
+maverick status                         Show identity, installation count, and data status
+```
+
+### Installation management
+
+```
+maverick installations                  List XMTP installations for your inbox
+maverick revoke-stale [--all]           Revoke stale XMTP installations
+```
+
+### Key management
+
+```
+maverick export-key                     Display your XMTP private key (use with care)
+maverick import-key                     Import an XMTP private key directly
+```
+
+### Backup & restore
+
+```
+maverick backup [path]                  Create an encrypted backup of XMTP + Maverick databases
+maverick restore <path>                 Restore databases from an encrypted backup
+```
+
+Backups are encrypted with AES-256-GCM using a passphrase you provide. This is the recommended way to protect against data loss — especially for solo communities where network-based recovery requires another online installation.
+
+### Community management
+
+```
+maverick create <name>                  Create a new community
+maverick communities                    List your communities
+maverick channels <meta-group-id>       List channels in a community
+maverick add-channel <id> <name>        Add a channel
+maverick invite <meta-group-id>         Generate an invite token
+maverick join <token>                   Join a community via invite
+maverick add-member <id> <inbox-id>     Add a member by XMTP inbox ID
+maverick resolve <handle>               Resolve a handle to XMTP Inbox ID
+```
+
+### Chat
+
+```
+maverick chat <id> <channel-name>       Interactive chat (simple mode)
+maverick tui [meta-group-id]            Launch the full TUI
+maverick                                Launch the TUI (default command)
+```
+
 ## TUI keybindings
 
 ```
@@ -61,24 +117,15 @@ Tab                Cycle channels
 q                  Quit
 ```
 
-## CLI commands
+## Recovery
 
-```
-maverick login                          Authenticate with Bluesky + XMTP
-maverick logout                         Clear saved credentials
-maverick whoami                         Show current identity info
-maverick resolve <handle>               Resolve a handle to XMTP Inbox ID
-maverick create <name>                  Create a new community
-maverick channels <meta-group-id>       List channels in a community
-maverick add-channel <id> <name>        Add a channel
-maverick invite <meta-group-id>         Generate an invite token
-maverick join <token>                   Join a community via invite
-maverick add-member <id> <inbox-id>     Add a member by XMTP inbox ID
-maverick communities                    List your communities
-maverick chat <id> <channel-name>       Interactive chat (simple mode)
-maverick tui [meta-group-id]            Launch the full TUI
-maverick                                Launch the full TUI, prompting for community if not specified
-```
+When you first log in, Maverick generates a **6-word recovery phrase** that deterministically derives your XMTP private key. Write it down — you need it to restore your identity on a new device.
+
+**Recovery methods (in order of preference):**
+
+1. **Recovery phrase + another online installation** — `maverick recover` derives your key from the phrase, then syncs communities from your other running installation via XMTP history sync.
+2. **Backup file** — `maverick restore` imports an encrypted backup created with `maverick backup`. Works offline, no other installation needed.
+3. **Recovery phrase alone** — Restores your identity (same inbox ID) but communities need another member to come online before they're accessible again.
 
 ## Development
 

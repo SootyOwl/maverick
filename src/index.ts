@@ -486,6 +486,185 @@ program
     console.log("Import complete!");
   });
 
+// ─── backup ───────────────────────────────────────────────────────────────
+
+program
+  .command("backup")
+  .description("Create an encrypted backup of XMTP and Maverick databases")
+  .argument("[path]", "Output file path", "maverick-backup.enc")
+  .action(async (outputPath: string) => {
+    const { createCipheriv, randomBytes, scryptSync } = await import("node:crypto");
+    const { readFileSync, writeFileSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+
+    const config = loadConfig();
+
+    // Check that databases exist
+    if (!existsSync(config.xmtp.dbPath)) {
+      console.error("No XMTP database found. Nothing to back up.");
+      console.error(`Expected at: ${config.xmtp.dbPath}`);
+      process.exit(1);
+    }
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+
+    console.log("Create an encrypted backup of your Maverick data.");
+    console.log("You'll need the passphrase to restore this backup.\n");
+
+    const passphrase = await ask("Backup passphrase: ");
+    if (passphrase.length < 8) {
+      console.error("Passphrase must be at least 8 characters.");
+      rl.close();
+      process.exit(1);
+    }
+    const confirm = await ask("Confirm passphrase: ");
+    if (passphrase !== confirm) {
+      console.error("Passphrases do not match.");
+      rl.close();
+      process.exit(1);
+    }
+    rl.close();
+
+    // Read database files
+    const xmtpDb = readFileSync(config.xmtp.dbPath);
+    const maverickDb = existsSync(config.sqlitePath)
+      ? readFileSync(config.sqlitePath)
+      : Buffer.alloc(0);
+
+    // Encrypt: scrypt key derivation + AES-256-GCM
+    const salt = randomBytes(32);
+    const iv = randomBytes(16);
+    const key = scryptSync(passphrase, salt, 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
+    const cipher = createCipheriv("aes-256-gcm", key, iv);
+
+    // Payload: [4B xmtpDbSize LE] [xmtpDb] [maverickDb]
+    const sizeBuf = Buffer.alloc(4);
+    sizeBuf.writeUInt32LE(xmtpDb.length, 0);
+    const plaintext = Buffer.concat([sizeBuf, xmtpDb, maverickDb]);
+
+    const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+    const authTag = cipher.getAuthTag();
+
+    // File format: [header JSON + newline] [salt 32B] [iv 16B] [authTag 16B] [encrypted]
+    const header = JSON.stringify({
+      version: 1,
+      createdAt: new Date().toISOString(),
+      xmtpDbSize: xmtpDb.length,
+      maverickDbSize: maverickDb.length,
+    });
+    const headerBuf = Buffer.from(header + "\n", "utf-8");
+    const headerLenBuf = Buffer.alloc(4);
+    headerLenBuf.writeUInt32LE(headerBuf.length, 0);
+
+    const output = Buffer.concat([headerLenBuf, headerBuf, salt, iv, authTag, encrypted]);
+    const resolvedPath = resolve(outputPath);
+    writeFileSync(resolvedPath, output);
+
+    const sizeMB = (output.length / (1024 * 1024)).toFixed(1);
+    console.log(`\nBackup created: ${resolvedPath} (${sizeMB} MB)`);
+    console.log("Keep this file and your passphrase safe.");
+  });
+
+// ─── restore ──────────────────────────────────────────────────────────────
+
+program
+  .command("restore")
+  .description("Restore Maverick databases from an encrypted backup")
+  .argument("<path>", "Path to backup file")
+  .action(async (inputPath: string) => {
+    const { createDecipheriv, scryptSync } = await import("node:crypto");
+    const { readFileSync, writeFileSync, chmodSync } = await import("node:fs");
+    const { resolve } = await import("node:path");
+
+    const config = loadConfig();
+    mkdirSync(config.dataDir, { recursive: true });
+
+    const resolvedPath = resolve(inputPath);
+    if (!existsSync(resolvedPath)) {
+      console.error(`Backup file not found: ${resolvedPath}`);
+      process.exit(1);
+    }
+
+    // Warn if databases already exist
+    if (existsSync(config.xmtp.dbPath) || existsSync(config.sqlitePath)) {
+      const rl = createInterface({ input: process.stdin, output: process.stdout });
+      const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+      const answer = await ask(
+        "Existing databases found. Restoring will overwrite them. Continue? [y/N] ",
+      );
+      rl.close();
+      if (answer.toLowerCase() !== "y") {
+        console.log("Restore cancelled.");
+        return;
+      }
+    }
+
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = (q: string) => new Promise<string>((resolve) => rl.question(q, resolve));
+    const passphrase = await ask("Backup passphrase: ");
+    rl.close();
+
+    const data = readFileSync(resolvedPath);
+    let offset = 0;
+
+    // Read header
+    const headerLen = data.readUInt32LE(offset);
+    offset += 4;
+    const headerStr = data.subarray(offset, offset + headerLen).toString("utf-8").trim();
+    offset += headerLen;
+    const header = JSON.parse(headerStr);
+
+    if (header.version !== 1) {
+      console.error(`Unsupported backup version: ${header.version}`);
+      process.exit(1);
+    }
+
+    // Read crypto params
+    const salt = data.subarray(offset, offset + 32);
+    offset += 32;
+    const iv = data.subarray(offset, offset + 16);
+    offset += 16;
+    const authTag = data.subarray(offset, offset + 16);
+    offset += 16;
+    const encrypted = data.subarray(offset);
+
+    // Decrypt
+    const key = scryptSync(passphrase, salt, 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
+    const decipher = createDecipheriv("aes-256-gcm", key, iv);
+    decipher.setAuthTag(authTag);
+
+    let plaintext: Buffer;
+    try {
+      plaintext = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+    } catch {
+      console.error("Decryption failed. Wrong passphrase or corrupted backup.");
+      process.exit(1);
+    }
+
+    // Parse payload
+    const xmtpDbSize = plaintext.readUInt32LE(0);
+    const xmtpDb = plaintext.subarray(4, 4 + xmtpDbSize);
+    const maverickDb = plaintext.subarray(4 + xmtpDbSize);
+
+    // Write databases
+    writeFileSync(config.xmtp.dbPath, xmtpDb);
+    chmodSync(config.xmtp.dbPath, 0o600);
+
+    if (maverickDb.length > 0) {
+      writeFileSync(config.sqlitePath, maverickDb);
+      chmodSync(config.sqlitePath, 0o600);
+    }
+
+    console.log(`\nRestore complete!`);
+    console.log(`  XMTP database: ${config.xmtp.dbPath} (${(xmtpDb.length / 1024).toFixed(0)} KB)`);
+    if (maverickDb.length > 0) {
+      console.log(`  Maverick database: ${config.sqlitePath} (${(maverickDb.length / 1024).toFixed(0)} KB)`);
+    }
+    console.log(`  Created: ${header.createdAt}`);
+    console.log("\nYou can now run `maverick login` to resume using your identity.");
+  });
+
 // ─── resolve ──────────────────────────────────────────────────────────────
 
 program
