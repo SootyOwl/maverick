@@ -80,7 +80,7 @@ maverick backup [path]                  Create an encrypted backup of XMTP + Mav
 maverick restore <path>                 Restore databases from an encrypted backup
 ```
 
-Backups are encrypted with AES-256-GCM using a passphrase you provide. This is the recommended way to protect against data loss — especially for solo communities where network-based recovery requires another online installation.
+Backups are encrypted with AES-256-GCM using a passphrase you provide. This is the most reliable recovery method — phrase-based recovery only syncs history if you have another of your own installations online, and cannot restore community membership on its own.
 
 ### Community management
 
@@ -123,9 +123,9 @@ When you first log in, Maverick generates a **6-word recovery phrase** that dete
 
 **Recovery methods (in order of preference):**
 
-1. **Recovery phrase + another online installation** — `maverick recover` derives your key from the phrase, then syncs communities from your other running installation via XMTP history sync.
-2. **Backup file** — `maverick restore` imports an encrypted backup created with `maverick backup`. Works offline, no other installation needed.
-3. **Recovery phrase alone** — Restores your identity (same inbox ID) but communities need another member to come online before they're accessible again.
+1. **Backup file** — `maverick restore` imports an encrypted backup created with `maverick backup`. Restores your databases locally; no network dependency. This is the most reliable recovery method.
+2. **Recovery phrase + another of your own installations online** — `maverick recover` derives your key from the phrase, then requests history sync from another installation **of your own account** (same inbox ID) via `sendSyncRequest()`. This only works if you have a second device already running Maverick.
+3. **Recovery phrase alone** — Restores your XMTP identity (same inbox ID and key) but **does not recover community access**. XMTP groups are not automatically re-joined. A community admin must manually re-add you via `maverick add-member`. Message history from before recovery is lost.
 
 ## Development
 
