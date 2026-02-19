@@ -1,15 +1,12 @@
-import { Entry } from "@napi-rs/keyring";
 import {
-  mkdirSync,
   readFileSync,
-  writeFileSync,
-  unlinkSync,
   existsSync,
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { createDecipheriv, scryptSync } from "node:crypto";
 import { SCRYPT_PARAMS } from "../utils/crypto-constants.js";
+import { KeychainStrategy } from "./keychain-strategy.js";
 
 // Key storage with OS keychain (primary) + plaintext 0600 file (fallback).
 //
@@ -26,8 +23,6 @@ import { SCRYPT_PARAMS } from "../utils/crypto-constants.js";
 // Override via __MAVERICK_KEYS_DIR for testing (file backend only).
 // Override via __MAVERICK_KEYRING_DISABLE=1 to force file-only mode in tests.
 
-const SERVICE = "maverick";
-
 // ── Directory + path helpers ─────────────────────────────────────────────
 
 function getKeysDir(): string {
@@ -35,10 +30,6 @@ function getKeysDir(): string {
     return process.env.__MAVERICK_KEYS_DIR;
   }
   return join(homedir(), ".maverick", "keys");
-}
-
-function ensureKeysDir(): void {
-  mkdirSync(getKeysDir(), { recursive: true });
 }
 
 function sanitizeHandle(handle: string): string {
@@ -49,138 +40,26 @@ function keyPath(handle: string): string {
   return join(getKeysDir(), `${sanitizeHandle(handle)}.key`);
 }
 
-function keyringAccount(handle: string): string {
-  return `xmtp-key-${sanitizeHandle(handle)}`;
-}
+// ── Strategy instance ────────────────────────────────────────────────────
+//
+// The logical "account" passed to save/load/delete is the raw handle.
+// keyringAccount maps it to "xmtp-key-<sanitized>" for the OS keychain.
+// filePath maps it to ~/.maverick/keys/<sanitized>.key.
 
-// ── Keyring backend ──────────────────────────────────────────────────────
-
-// Persist keyring availability across process restarts to avoid probing the
-// OS keychain on every cold start (which can trigger unlock prompts).
-// Cache file: <keysDir>/.keyring_ok  — "1" available, "0" unavailable.
-
-function keyringCachePath(): string {
-  return join(getKeysDir(), ".keyring_ok");
-}
-
-function readKeyringCache(): boolean | null {
-  try {
-    const raw = readFileSync(keyringCachePath(), "utf-8").trim();
-    if (raw === "1") return true;
-    if (raw === "0") return false;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-function writeKeyringCache(available: boolean): void {
-  try {
-    ensureKeysDir();
-    writeFileSync(keyringCachePath(), available ? "1" : "0", { mode: 0o600 });
-  } catch {
-    /* best effort */
-  }
-}
-
-function keyringAvailable(): boolean {
-  if (process.env.__MAVERICK_KEYRING_DISABLE === "1") {
-    return false;
-  }
-
-  // Check file cache before touching the OS keychain
-  const cached = readKeyringCache();
-  if (cached !== null) {
-    return cached;
-  }
-
-  // First run: probe once, then persist the result
-  try {
-    const probe = new Entry(SERVICE, "__probe__");
-    probe.setPassword("ok");
-    probe.deletePassword();
-    writeKeyringCache(true);
-    return true;
-  } catch {
-    writeKeyringCache(false);
-    return false;
-  }
-}
-
-let _keyringOk: boolean | undefined;
-let _warnedFallback = false;
-
-function useKeyring(): boolean {
-  if (_keyringOk === undefined) {
-    _keyringOk = keyringAvailable();
-  }
-  return _keyringOk;
-}
-
-function warnFallback(): void {
-  if (_warnedFallback) return;
-  _warnedFallback = true;
-  console.warn(
-    `[maverick] OS keychain unavailable — XMTP keys saved to ${getKeysDir()}/ (mode 0600)`,
-  );
-}
-
-/** Reset cached keyring state. Only for testing. */
-export function _resetKeyringCache(): void {
-  _keyringOk = undefined;
-  _warnedFallback = false;
-  // Also remove the on-disk cache so probe re-runs in the next test
-  try { unlinkSync(keyringCachePath()); } catch { /* may not exist */ }
-}
-
-function saveToKeyring(handle: string, key: string): void {
-  new Entry(SERVICE, keyringAccount(handle)).setPassword(key);
-}
-
-function loadFromKeyring(handle: string): string | null {
-  try {
-    const val = new Entry(SERVICE, keyringAccount(handle)).getPassword();
-    return val || null;
-  } catch {
-    return null;
-  }
-}
-
-function clearKeyring(handle: string): void {
-  try {
-    new Entry(SERVICE, keyringAccount(handle)).deletePassword();
-  } catch {
-    /* may not exist */
-  }
-}
-
-// ── File backend (plaintext, 0600) ───────────────────────────────────────
-
-function saveToFile(handle: string, key: string): void {
-  ensureKeysDir();
-  writeFileSync(keyPath(handle), key, { mode: 0o600 });
-}
-
-function loadFromFile(handle: string): string | null {
-  const path = keyPath(handle);
-  try {
-    const raw = readFileSync(path, "utf-8").trim();
+const strategy = new KeychainStrategy({
+  service: "maverick",
+  filePath: (handle: string) => keyPath(handle),
+  keyringAccount: (handle: string) => `xmtp-key-${sanitizeHandle(handle)}`,
+  cacheDir: getKeysDir,
+  fallbackLabel: `XMTP keys`,
+  fileValidator: (raw: string) => {
     // Only accept raw hex keys (new plaintext format) — not encrypted JSON
     if (raw.startsWith("0x") && !raw.includes("{")) {
       return raw;
     }
     return null;
-  } catch {
-    return null;
-  }
-}
-
-function clearFile(handle: string): void {
-  const path = keyPath(handle);
-  if (existsSync(path)) {
-    unlinkSync(path);
-  }
-}
+  },
+});
 
 // ── Legacy decryption (old passphrase-encrypted format) ──────────────────
 
@@ -216,34 +95,19 @@ function decryptEncrypted(stored: string, passphrase: string): string | null {
 // ── Public API ───────────────────────────────────────────────────────────
 
 /**
+ * Reset cached keyring state. Only for testing.
+ */
+export function _resetKeyringCache(): void {
+  strategy._reset();
+}
+
+/**
  * Retrieve the stored XMTP private key for a handle.
  * Tries keychain first (faster, more secure), then plaintext file fallback.
  * Returns null if no key is stored.
  */
 export async function getStoredKey(handle: string): Promise<string | null> {
-  // Try keychain first
-  if (useKeyring()) {
-    const fromKeyring = loadFromKeyring(handle);
-    if (fromKeyring) {
-      return fromKeyring;
-    }
-  }
-
-  // Fall back to plaintext file
-  const fromFile = loadFromFile(handle);
-  if (fromFile) {
-    // Opportunistically populate keychain if available
-    if (useKeyring()) {
-      try {
-        saveToKeyring(handle, fromFile);
-      } catch {
-        /* best effort */
-      }
-    }
-    return fromFile;
-  }
-
-  return null;
+  return strategy.load(handle);
 }
 
 /**
@@ -254,15 +118,14 @@ export async function storeKey(
   handle: string,
   privateKey: string,
 ): Promise<void> {
-  // Write to keychain
-  if (useKeyring()) {
-    saveToKeyring(handle, privateKey);
-  } else {
-    warnFallback();
-  }
+  strategy.save(handle, privateKey);
+}
 
-  // Always write file fallback
-  saveToFile(handle, privateKey);
+/**
+ * Delete the stored key from all backends (keychain + file).
+ */
+export async function deleteKey(handle: string): Promise<void> {
+  strategy.delete(handle);
 }
 
 /**
@@ -308,19 +171,9 @@ export async function migrateLegacyKey(
   }
 
   // Delete old file then store in new format
-  clearFile(handle);
+  strategy.delete(handle);
   await storeKey(handle, decrypted);
   return decrypted;
-}
-
-/**
- * Delete the stored key from all backends (keychain + file).
- */
-export async function deleteKey(handle: string): Promise<void> {
-  if (useKeyring()) {
-    clearKeyring(handle);
-  }
-  clearFile(handle);
 }
 
 /**
