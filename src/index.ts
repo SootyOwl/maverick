@@ -591,6 +591,33 @@ program
       ? readFileSync(config.sqlitePath)
       : Buffer.alloc(0);
 
+    // Read the XMTP private key so the backup is self-contained.
+    // Without the key the restored XMTP database is unreadable (encrypted with
+    // a different key than whatever the user generates on next login).
+    let privateKeyBuf = Buffer.alloc(0);
+    let privateKeyIncluded = false;
+    if (config.bluesky.handle) {
+      const cachedKey = await getCachedPrivateKey(config.bluesky.handle);
+      if (cachedKey) {
+        privateKeyBuf = Buffer.from(cachedKey, "utf-8");
+        privateKeyIncluded = true;
+      } else {
+        console.warn(
+          "Warning: No XMTP private key found for this handle. The backup will NOT include the key.",
+        );
+        console.warn(
+          "You will need your recovery phrase to use this backup.\n",
+        );
+      }
+    } else {
+      console.warn(
+        "Warning: No Bluesky handle configured. Cannot include XMTP private key in backup.",
+      );
+      console.warn(
+        "You will need your recovery phrase to use this backup.\n",
+      );
+    }
+
     // Encrypt: scrypt key derivation + AES-256-GCM
     // 12-byte (96-bit) IV per NIST SP 800-38D recommendation for GCM.
     const salt = randomBytes(32);
@@ -598,21 +625,25 @@ program
     const key = scryptSync(passphrase, salt, 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
     const cipher = createCipheriv("aes-256-gcm", key, iv);
 
-    // Payload: [4B xmtpDbSize LE] [xmtpDb] [maverickDb]
-    const sizeBuf = Buffer.alloc(4);
-    sizeBuf.writeUInt32LE(xmtpDb.length, 0);
-    const plaintext = Buffer.concat([sizeBuf, xmtpDb, maverickDb]);
+    // v3 Payload: [4B xmtpDbSize LE] [xmtpDb] [4B maverickDbSize LE] [maverickDb] [privateKey UTF-8]
+    // The private key occupies the remaining bytes after the two sized segments.
+    const xmtpSizeBuf = Buffer.alloc(4);
+    xmtpSizeBuf.writeUInt32LE(xmtpDb.length, 0);
+    const mavSizeBuf = Buffer.alloc(4);
+    mavSizeBuf.writeUInt32LE(maverickDb.length, 0);
+    const plaintext = Buffer.concat([xmtpSizeBuf, xmtpDb, mavSizeBuf, maverickDb, privateKeyBuf]);
 
     const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
     const authTag = cipher.getAuthTag();
 
     // File format: [header JSON + newline] [salt 32B] [iv 12B] [authTag 16B] [encrypted]
-    // Version 2 uses a 12-byte IV (version 1 used 16 bytes).
+    // Version 3 adds the XMTP private key to the encrypted payload.
     const header = JSON.stringify({
-      version: 2,
+      version: 3,
       createdAt: new Date().toISOString(),
       xmtpDbSize: xmtpDb.length,
       maverickDbSize: maverickDb.length,
+      privateKeyIncluded,
     });
     const headerBuf = Buffer.from(header + "\n", "utf-8");
     const headerLenBuf = Buffer.alloc(4);
@@ -624,6 +655,9 @@ program
 
     const sizeMB = (output.length / (1024 * 1024)).toFixed(1);
     console.log(`\nBackup created: ${resolvedPath} (${sizeMB} MB)`);
+    if (privateKeyIncluded) {
+      console.log("Includes XMTP private key — no recovery phrase needed to restore.");
+    }
     console.log("Keep this file and your passphrase safe.");
   });
 
@@ -670,13 +704,13 @@ program
     offset += headerLen;
     const header = JSON.parse(headerStr);
 
-    if (header.version !== 1 && header.version !== 2) {
+    if (header.version !== 1 && header.version !== 2 && header.version !== 3) {
       console.error(`Unsupported backup version: ${header.version}`);
       process.exit(1);
     }
 
     // Read crypto params
-    // v1 used a 16-byte IV; v2 uses 12 bytes (NIST SP 800-38D recommended).
+    // v1 used a 16-byte IV; v2+ uses 12 bytes (NIST SP 800-38D recommended).
     const ivSize = header.version === 1 ? 16 : 12;
     const salt = data.subarray(offset, offset + 32);
     offset += 32;
@@ -699,10 +733,32 @@ program
       process.exit(1);
     }
 
-    // Parse payload
-    const xmtpDbSize = plaintext.readUInt32LE(0);
-    const xmtpDb = plaintext.subarray(4, 4 + xmtpDbSize);
-    const maverickDb = plaintext.subarray(4 + xmtpDbSize);
+    // Parse payload — format depends on version
+    let xmtpDb: Buffer;
+    let maverickDb: Buffer;
+    let restoredPrivateKey: string | null = null;
+
+    if (header.version >= 3) {
+      // v3: [4B xmtpDbSize] [xmtpDb] [4B maverickDbSize] [maverickDb] [privateKey UTF-8]
+      let pOff = 0;
+      const xmtpDbSize = plaintext.readUInt32LE(pOff);
+      pOff += 4;
+      xmtpDb = plaintext.subarray(pOff, pOff + xmtpDbSize);
+      pOff += xmtpDbSize;
+      const maverickDbSize = plaintext.readUInt32LE(pOff);
+      pOff += 4;
+      maverickDb = plaintext.subarray(pOff, pOff + maverickDbSize);
+      pOff += maverickDbSize;
+      const keyBytes = plaintext.subarray(pOff);
+      if (keyBytes.length > 0) {
+        restoredPrivateKey = keyBytes.toString("utf-8");
+      }
+    } else {
+      // v1/v2: [4B xmtpDbSize] [xmtpDb] [maverickDb (remainder)]
+      const xmtpDbSize = plaintext.readUInt32LE(0);
+      xmtpDb = plaintext.subarray(4, 4 + xmtpDbSize);
+      maverickDb = plaintext.subarray(4 + xmtpDbSize);
+    }
 
     // Write databases
     writeFileSync(config.xmtp.dbPath, xmtpDb);
@@ -713,13 +769,38 @@ program
       chmodSync(config.sqlitePath, 0o600);
     }
 
+    // Restore private key if present
+    if (restoredPrivateKey && config.bluesky.handle) {
+      const { storeKey } = await import("./storage/keys.js");
+      await storeKey(config.bluesky.handle, restoredPrivateKey);
+      console.log("\n  Private key restored to local storage.");
+    } else if (!restoredPrivateKey) {
+      console.warn(
+        "\nWarning: This backup does not include the XMTP private key (old format).",
+      );
+      console.warn(
+        "You will need to run `maverick recover` with your recovery phrase before using this identity.",
+      );
+    } else if (!config.bluesky.handle) {
+      console.warn(
+        "\nWarning: No Bluesky handle configured — could not store the restored private key.",
+      );
+      console.warn(
+        "Run `maverick login` and then restore again, or use `maverick recover`.",
+      );
+    }
+
     console.log(`\nRestore complete!`);
     console.log(`  XMTP database: ${config.xmtp.dbPath} (${(xmtpDb.length / 1024).toFixed(0)} KB)`);
     if (maverickDb.length > 0) {
       console.log(`  Maverick database: ${config.sqlitePath} (${(maverickDb.length / 1024).toFixed(0)} KB)`);
     }
     console.log(`  Created: ${header.createdAt}`);
-    console.log("\nYou can now run `maverick login` to resume using your identity.");
+    if (restoredPrivateKey && config.bluesky.handle) {
+      console.log("\nYou can now run `maverick login` to resume using your identity.");
+    } else {
+      console.log("\nRun `maverick recover` with your recovery phrase to restore your XMTP key.");
+    }
   });
 
 // ─── resolve ──────────────────────────────────────────────────────────────
