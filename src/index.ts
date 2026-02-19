@@ -108,6 +108,21 @@ function createPrompt(): { ask: (q: string) => Promise<string>; close: () => voi
   };
 }
 
+async function ensureCredentials(config: Config): Promise<Config> {
+  if (config.bluesky.handle && config.bluesky.password) return config;
+
+  const credPrompt = createPrompt();
+  console.log("No Bluesky credentials found. Please enter them below.\n");
+  const handle = config.bluesky.handle || await credPrompt.ask("Bluesky handle: ");
+  const password = config.bluesky.password || await credPrompt.ask("App password: ");
+  credPrompt.close();
+
+  return {
+    ...config,
+    bluesky: { ...config.bluesky, handle, password },
+  };
+}
+
 async function recoverAndFinish(
   config: Config,
   bsky: { agent: AtpAgent; did: string; handle: string },
@@ -145,19 +160,7 @@ program
     let config = loadConfig();
     mkdirSync(config.dataDir, { recursive: true });
 
-    // Prompt for credentials interactively if not available
-    if (!config.bluesky.handle || !config.bluesky.password) {
-      const credPrompt = createPrompt();
-      console.log("No Bluesky credentials found. Please enter them below.\n");
-      const handle = config.bluesky.handle || await credPrompt.ask("Bluesky handle: ");
-      const password = config.bluesky.password || await credPrompt.ask("App password: ");
-      credPrompt.close();
-
-      config = {
-        ...config,
-        bluesky: { ...config.bluesky, handle, password },
-      };
-    }
+    config = await ensureCredentials(config);
 
     const bsky = await createBlueskySession(config);
 
@@ -279,19 +282,7 @@ program
     let config = loadConfig();
     mkdirSync(config.dataDir, { recursive: true });
 
-    // Prompt for credentials interactively if not available
-    if (!config.bluesky.handle || !config.bluesky.password) {
-      const credPrompt = createPrompt();
-      console.log("No Bluesky credentials found. Please enter them below.\n");
-      const handle = config.bluesky.handle || await credPrompt.ask("Bluesky handle: ");
-      const password = config.bluesky.password || await credPrompt.ask("App password: ");
-      credPrompt.close();
-
-      config = {
-        ...config,
-        bluesky: { ...config.bluesky, handle, password },
-      };
-    }
+    config = await ensureCredentials(config);
 
     const bsky = await createBlueskySession(config);
 
