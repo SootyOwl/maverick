@@ -287,16 +287,16 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
     setStep(1);
 
     try {
-      const { recoverIdentity, createXmtpClient } = await import("../../identity/xmtp.js");
+      const { recoverIdentity, createXmtpClient, commitIdentity } = await import("../../identity/xmtp.js");
 
-      // Derive key from phrase + DID
+      // Derive key from phrase + DID (does NOT persist — key is unverified)
       const privateKey = await recoverIdentity(
         bskyResult.handle,
         bskyResult.did,
         phraseInput,
       );
 
-      // Create XMTP client to verify the inbox ID matches
+      // Create XMTP client to verify the key works against the XMTP DB
       const xmtpClient = await createXmtpClient(bskyResult.config, privateKey);
 
       // Verify the recovered inbox ID matches the PDS record
@@ -310,9 +310,19 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         return;
       }
 
+      // Key verified — now safe to persist
+      await commitIdentity(bskyResult.handle, privateKey);
+
       // Delegate remaining steps (publish bridge, DB, recovery, session) to finishLogin
       await finishLogin(bskyResult.config, bskyResult, privateKey, bskyResult.password, true);
     } catch (err) {
+      // Clean up any potentially poisoned cached key from prior attempts
+      try {
+        const { deleteKey } = await import("../../storage/keys.js");
+        await deleteKey(bskyResult.handle);
+      } catch {
+        // Non-fatal: cleanup is best-effort
+      }
       setStatus("phraseEntry");
       setPhraseError(err instanceof Error ? err.message : String(err));
       setPhraseInput("");

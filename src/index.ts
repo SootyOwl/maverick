@@ -101,7 +101,16 @@ async function recoverAndFinish(
   config: Config,
   bsky: { agent: AtpAgent; did: string; handle: string },
   xmtp: Client,
+  privateKey?: `0x${string}`,
 ): Promise<void> {
+  // Persist the verified key now that createXmtpClient() succeeded.
+  // This must happen AFTER verification to avoid poisoning the key cache
+  // with an incorrect key derived from a wrong recovery phrase.
+  if (privateKey) {
+    const { storeKey } = await import("./storage/keys.js");
+    await storeKey(bsky.handle, privateKey);
+  }
+
   const db = createDatabase(config.sqlitePath);
   const manager = new CommunityManager(xmtp, db);
   const result = await manager.recoverAllCommunities({
@@ -179,7 +188,7 @@ program
 
       console.log(`Recovered! Inbox ID: ${xmtp.inboxId}`);
 
-      await recoverAndFinish(config, bsky, xmtp);
+      await recoverAndFinish(config, bsky, xmtp, privateKey);
       prompt.close();
       console.log("Login complete!");
       return;
@@ -279,7 +288,7 @@ program
     }
 
     console.log("\nRecovering communities...");
-    await recoverAndFinish(config, bsky, xmtp);
+    await recoverAndFinish(config, bsky, xmtp, privateKey);
     prompt.close();
     console.log("\nRecovery complete!");
   });

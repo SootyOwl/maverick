@@ -183,15 +183,51 @@ describe("XMTP identity flow", () => {
       expect(recovered).toBe(original);
     });
 
-    it("caches the recovered key", async () => {
+    it("does NOT cache the key (callers must store after verification)", async () => {
+      const { recoveryPhrase } =
+        await createNewIdentity(testHandle, testDid);
+
+      await deleteKey(testHandle);
+      expect(await getCachedPrivateKey(testHandle)).toBeNull();
+
+      await recoverIdentity(testHandle, testDid, recoveryPhrase);
+
+      // Key must NOT be persisted — recoverIdentity only derives
+      const cached = await getCachedPrivateKey(testHandle);
+      expect(cached).toBeNull();
+    });
+
+    it("returns the derived key without side effects", async () => {
       const { recoveryPhrase, privateKey: original } =
         await createNewIdentity(testHandle, testDid);
 
       await deleteKey(testHandle);
-      await recoverIdentity(testHandle, testDid, recoveryPhrase);
 
-      const cached = await getCachedPrivateKey(testHandle);
-      expect(cached).toBe(original);
+      const recovered = await recoverIdentity(
+        testHandle,
+        testDid,
+        recoveryPhrase,
+      );
+
+      // Returns correct key
+      expect(recovered).toBe(original);
+      // No side effects — nothing stored
+      expect(await getCachedPrivateKey(testHandle)).toBeNull();
+    });
+
+    it("wrong phrase does not leave a cached key", async () => {
+      await createNewIdentity(testHandle, testDid);
+      await deleteKey(testHandle);
+
+      // Use a wrong phrase — should still not store anything
+      const wrongKey = await recoverIdentity(
+        testHandle,
+        testDid,
+        "wrong wrong wrong wrong wrong wrong",
+      );
+      // Returns a key (derived from the wrong phrase), but does NOT cache it
+      expect(wrongKey).toMatch(/^0x[0-9a-f]{64}$/);
+      expect(await getCachedPrivateKey(testHandle)).toBeNull();
     });
 
     it("produces a valid 0x-prefixed hex key", async () => {
@@ -213,6 +249,25 @@ describe("XMTP identity flow", () => {
         recoveryPhrase,
       );
       expect(key1).not.toBe(key2);
+    });
+
+    it("caller can store key after external verification succeeds", async () => {
+      const { recoveryPhrase, privateKey: original } =
+        await createNewIdentity(testHandle, testDid);
+
+      await deleteKey(testHandle);
+
+      const recovered = await recoverIdentity(
+        testHandle,
+        testDid,
+        recoveryPhrase,
+      );
+      // Simulate caller verifying the key (e.g. createXmtpClient succeeds)
+      // then explicitly storing it
+      await commitIdentity(testHandle, recovered);
+
+      const cached = await getCachedPrivateKey(testHandle);
+      expect(cached).toBe(original);
     });
   });
 

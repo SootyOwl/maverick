@@ -68,15 +68,19 @@ export async function commitIdentity(
 
 /**
  * Recover an XMTP identity from a recovery phrase: derive the private key
- * from the phrase + DID, cache it, and return it.
+ * from the phrase + DID and return it WITHOUT persisting.
+ *
+ * Callers MUST verify the key works (e.g. by calling createXmtpClient())
+ * before persisting it via storeKey(). Storing before verification can
+ * poison the key cache — a wrong recovery phrase would permanently cache
+ * an incorrect key, causing all subsequent logins to fail.
  */
 export async function recoverIdentity(
-  handle: string,
+  _handle: string,
   did: string,
   phrase: string,
 ): Promise<`0x${string}`> {
   const privateKey = derivePrivateKey(phrase, did);
-  await storeKey(handle, privateKey);
   return privateKey;
 }
 
