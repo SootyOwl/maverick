@@ -62,7 +62,18 @@ async function bootstrap(): Promise<{
   const config = loadConfig();
   mkdirSync(config.dataDir, { recursive: true });
 
-  const bsky = await createBlueskySession(config);
+  let bsky: BlueskySession;
+  try {
+    bsky = await createBlueskySession(config);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/Missing Bluesky credentials/i.test(msg)) {
+      throw new Error(
+        "Missing Bluesky credentials. Run 'maverick login' first, or set MAVERICK_BLUESKY_HANDLE and MAVERICK_BLUESKY_PASSWORD environment variables.",
+      );
+    }
+    throw err;
+  }
 
   // Try cache first
   let privateKey = await getCachedPrivateKey(bsky.handle);
@@ -131,8 +142,23 @@ program
   .command("login")
   .description("Authenticate with Bluesky + set up or recover XMTP identity")
   .action(async () => {
-    const config = loadConfig();
+    let config = loadConfig();
     mkdirSync(config.dataDir, { recursive: true });
+
+    // Prompt for credentials interactively if not available
+    if (!config.bluesky.handle || !config.bluesky.password) {
+      const credPrompt = createPrompt();
+      console.log("No Bluesky credentials found. Please enter them below.\n");
+      const handle = config.bluesky.handle || await credPrompt.ask("Bluesky handle: ");
+      const password = config.bluesky.password || await credPrompt.ask("App password: ");
+      credPrompt.close();
+
+      config = {
+        ...config,
+        bluesky: { ...config.bluesky, handle, password },
+      };
+    }
+
     const bsky = await createBlueskySession(config);
 
     console.log(`Authenticated as ${bsky.handle} (${bsky.did})`);
@@ -250,8 +276,23 @@ program
   .command("recover")
   .description("Recover identity from a recovery phrase")
   .action(async () => {
-    const config = loadConfig();
+    let config = loadConfig();
     mkdirSync(config.dataDir, { recursive: true });
+
+    // Prompt for credentials interactively if not available
+    if (!config.bluesky.handle || !config.bluesky.password) {
+      const credPrompt = createPrompt();
+      console.log("No Bluesky credentials found. Please enter them below.\n");
+      const handle = config.bluesky.handle || await credPrompt.ask("Bluesky handle: ");
+      const password = config.bluesky.password || await credPrompt.ask("App password: ");
+      credPrompt.close();
+
+      config = {
+        ...config,
+        bluesky: { ...config.bluesky, handle, password },
+      };
+    }
+
     const bsky = await createBlueskySession(config);
 
     console.log(`Authenticated as ${bsky.handle} (${bsky.did})`);
