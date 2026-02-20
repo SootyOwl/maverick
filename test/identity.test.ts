@@ -11,7 +11,6 @@ import {
   createNewIdentity,
   commitIdentity,
   recoverIdentity,
-  importRawKey,
   migrateLegacyIdentity,
 } from "../src/identity/xmtp.js";
 import { derivePrivateKey } from "../src/identity/recovery-phrase.js";
@@ -268,25 +267,6 @@ describe("XMTP identity flow", () => {
 
       const cached = await getCachedPrivateKey(testHandle);
       expect(cached).toBe(original);
-    });
-  });
-
-  describe("importRawKey", () => {
-    it("stores the key so it can be retrieved", async () => {
-      await importRawKey(testHandle, testKey);
-      const cached = await getCachedPrivateKey(testHandle);
-      expect(cached).toBe(testKey);
-    });
-
-    it("overwrites a previously stored key", async () => {
-      const otherKey =
-        "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d" as `0x${string}`;
-
-      await importRawKey(testHandle, testKey);
-      await importRawKey(testHandle, otherKey);
-
-      const cached = await getCachedPrivateKey(testHandle);
-      expect(cached).toBe(otherKey);
     });
   });
 

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { theme, sym } from "../theme.js";
+import { Spinner } from "../components/Spinner.js";
 import { sanitize } from "../../utils/sanitize.js";
 import { TextInput } from "../components/TextInput.js";
 import type { AuthSession } from "../hooks/useAppState.js";
@@ -13,17 +14,6 @@ interface ChannelCreateScreenProps {
 }
 
 type Status = "idle" | "creating" | "error";
-
-function Spinner() {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((f) => (f + 1) % sym.spinnerFrames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, []);
-  return <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>;
-}
 
 export function ChannelCreateScreen({
   session,

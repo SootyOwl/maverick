@@ -29,8 +29,8 @@ export function MessageView({
 }: MessageViewProps) {
   const { stdout } = useStdout();
   const termWidth = stdout.columns ?? 80;
-  const separatorWidth = Math.max(10, termWidth - 34);
   const metrics = getPanelMetrics(termWidth);
+  const separatorWidth = Math.max(10, metrics.totalWidth);
   const effectiveRows = availableRows ?? 100;
 
   const [scrollOffset, setScrollOffset] = useState(0);

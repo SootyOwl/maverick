@@ -1,8 +1,10 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { theme, sym } from "../theme.js";
+import { Spinner } from "../components/Spinner.js";
 import { sanitize } from "../../utils/sanitize.js";
 import { TextInput } from "../components/TextInput.js";
+import { decodeInvite, verifyInvite } from "../../community/invites.js";
 import type { AuthSession } from "../hooks/useAppState.js";
 
 interface JoinScreenProps {
@@ -11,17 +13,6 @@ interface JoinScreenProps {
 }
 
 type Status = "idle" | "verifying" | "verified" | "error";
-
-function Spinner() {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((f) => (f + 1) % sym.spinnerFrames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, []);
-  return <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>;
-}
 
 export function JoinScreen({ session, onBack }: JoinScreenProps) {
   const [token, setToken] = useState("");
@@ -40,7 +31,6 @@ export function JoinScreen({ session, onBack }: JoinScreenProps) {
     setError(null);
 
     try {
-      const { decodeInvite, verifyInvite } = await import("../../community/invites.js");
       const invite = decodeInvite(trimmed);
 
       const valid = await verifyInvite(invite);

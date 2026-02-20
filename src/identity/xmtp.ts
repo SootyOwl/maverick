@@ -85,17 +85,6 @@ export async function recoverIdentity(
 }
 
 /**
- * Import a raw XMTP private key directly (e.g. from an external backup).
- * Caches it in the keychain/file for future use.
- */
-export async function importRawKey(
-  handle: string,
-  key: `0x${string}`,
-): Promise<void> {
-  await storeKey(handle, key);
-}
-
-/**
  * Migrate a legacy passphrase-encrypted key file to the new storage system.
  * Decrypts the old file with the Bluesky app password, stores it in the
  * new format (keychain + plaintext 0600 file), and removes the encrypted file.
