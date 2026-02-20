@@ -7,9 +7,8 @@ import {
   resolveHandleToInbox,
   verifyInboxAssociation,
 } from "../identity/resolver.js";
-import { createDatabase } from "../storage/db.js";
 import { CommunityManager } from "../community/manager.js";
-import { bootstrap } from "./shared.js";
+import { bootstrap, withDatabase } from "./shared.js";
 
 export function registerCommunityCommands(program: Command): void {
   // ─── resolve ──────────────────────────────────────────────────────────────
@@ -54,24 +53,22 @@ export function registerCommunityCommands(program: Command): void {
     .option("-d, --description <desc>", "Community description")
     .action(async (name: string, opts: { description?: string }) => {
       const { config, xmtp } = await bootstrap();
-      const db = createDatabase(config.sqlitePath);
-      const manager = new CommunityManager(xmtp, db);
+      await withDatabase(config.sqlitePath, async (db) => {
+        const manager = new CommunityManager(xmtp, db);
 
-      console.log(`Creating community "${name}"...`);
-      const metaGroupId = await manager.createCommunity(name, opts.description);
-      console.log(`Community created! Meta group ID: ${metaGroupId}`);
+        console.log(`Creating community "${name}"...`);
+        const metaGroupId = await manager.createCommunity(name, opts.description);
+        console.log(`Community created! Meta group ID: ${metaGroupId}`);
 
-      // Create a default #general channel
-      console.log("Creating #general channel...");
-      const channelId = await manager.createChannel(
-        metaGroupId,
-        "general",
-        "open",
-        "General discussion",
-      );
-      console.log(`Channel created! ID: ${channelId}`);
-
-      db.close();
+        console.log("Creating #general channel...");
+        const channelId = await manager.createChannel(
+          metaGroupId,
+          "general",
+          "open",
+          "General discussion",
+        );
+        console.log(`Channel created! ID: ${channelId}`);
+      });
     });
 
   // ─── channels ─────────────────────────────────────────────────────────────
@@ -82,26 +79,25 @@ export function registerCommunityCommands(program: Command): void {
     .argument("<meta-group-id>", "Meta channel group ID")
     .action(async (metaGroupId: string) => {
       const { config, xmtp } = await bootstrap();
-      const db = createDatabase(config.sqlitePath);
-      const manager = new CommunityManager(xmtp, db);
+      await withDatabase(config.sqlitePath, async (db) => {
+        const manager = new CommunityManager(xmtp, db);
 
-      console.log("Syncing community state...");
-      const state = await manager.syncCommunityState(metaGroupId);
+        console.log("Syncing community state...");
+        const state = await manager.syncCommunityState(metaGroupId);
 
-      if (state.config) {
-        console.log(`\nCommunity: ${state.config.name}`);
-        if (state.config.description) {
-          console.log(`  ${state.config.description}`);
+        if (state.config) {
+          console.log(`\nCommunity: ${state.config.name}`);
+          if (state.config.description) {
+            console.log(`  ${state.config.description}`);
+          }
         }
-      }
 
-      console.log("\nChannels:");
-      for (const [, ch] of state.channels) {
-        const status = ch.archived ? " [archived]" : "";
-        console.log(`  #${ch.name}${status} (${ch.permissions}) - ${ch.xmtpGroupId}`);
-      }
-
-      db.close();
+        console.log("\nChannels:");
+        for (const [, ch] of state.channels) {
+          const status = ch.archived ? " [archived]" : "";
+          console.log(`  #${ch.name}${status} (${ch.permissions}) - ${ch.xmtpGroupId}`);
+        }
+      });
     });
 
   // ─── add-channel ──────────────────────────────────────────────────────────
@@ -124,28 +120,26 @@ export function registerCommunityCommands(program: Command): void {
         opts: { description?: string; permissions: string },
       ) => {
         const { config, xmtp } = await bootstrap();
-        const db = createDatabase(config.sqlitePath);
-        const manager = new CommunityManager(xmtp, db);
+        await withDatabase(config.sqlitePath, async (db) => {
+          const manager = new CommunityManager(xmtp, db);
 
-        const validPerms = ["open", "moderated", "read-only"] as const;
-        if (!validPerms.includes(opts.permissions as typeof validPerms[number])) {
-          console.error(
-            `Invalid permissions: "${opts.permissions}". Must be one of: ${validPerms.join(", ")}`,
+          const validPerms = ["open", "moderated", "read-only"] as const;
+          if (!validPerms.includes(opts.permissions as typeof validPerms[number])) {
+            console.error(
+              `Invalid permissions: "${opts.permissions}". Must be one of: ${validPerms.join(", ")}`,
+            );
+            return;
+          }
+
+          console.log(`Creating #${name}...`);
+          const channelId = await manager.createChannel(
+            metaGroupId,
+            name,
+            opts.permissions as "open" | "moderated" | "read-only",
+            opts.description,
           );
-          db.close();
-          return;
-        }
-
-        console.log(`Creating #${name}...`);
-        const channelId = await manager.createChannel(
-          metaGroupId,
-          name,
-          opts.permissions as "open" | "moderated" | "read-only",
-          opts.description,
-        );
-        console.log(`Channel created! ID: ${channelId}`);
-
-        db.close();
+          console.log(`Channel created! ID: ${channelId}`);
+        });
       },
     );
 
@@ -158,14 +152,13 @@ export function registerCommunityCommands(program: Command): void {
     .argument("<inbox-id>", "Member's XMTP inbox ID")
     .action(async (metaGroupId: string, inboxId: string) => {
       const { config, xmtp } = await bootstrap();
-      const db = createDatabase(config.sqlitePath);
-      const manager = new CommunityManager(xmtp, db);
+      await withDatabase(config.sqlitePath, async (db) => {
+        const manager = new CommunityManager(xmtp, db);
 
-      console.log(`Adding member ${inboxId} to community...`);
-      await manager.addMember(metaGroupId, inboxId);
-      console.log("Member added to meta channel and all channels.");
-
-      db.close();
+        console.log(`Adding member ${inboxId} to community...`);
+        await manager.addMember(metaGroupId, inboxId);
+        console.log("Member added to meta channel and all channels.");
+      });
     });
 
   // ─── communities ──────────────────────────────────────────────────────────
@@ -175,22 +168,21 @@ export function registerCommunityCommands(program: Command): void {
     .description("List communities you belong to")
     .action(async () => {
       const { xmtp } = await bootstrap();
-      const db = createDatabase(loadConfig().sqlitePath);
-      const manager = new CommunityManager(xmtp, db);
+      await withDatabase(loadConfig().sqlitePath, async (db) => {
+        const manager = new CommunityManager(xmtp, db);
 
-      console.log("Scanning for communities...");
-      const communities = await manager.listCommunities();
+        console.log("Scanning for communities...");
+        const communities = await manager.listCommunities();
 
-      if (communities.length === 0) {
-        console.log("No communities found.");
-      } else {
-        console.log(`\nFound ${communities.length} community(ies):\n`);
-        for (const c of communities) {
-          console.log(`  ${c.name}`);
-          console.log(`    Meta group: ${c.groupId}`);
+        if (communities.length === 0) {
+          console.log("No communities found.");
+        } else {
+          console.log(`\nFound ${communities.length} community(ies):\n`);
+          for (const c of communities) {
+            console.log(`  ${c.name}`);
+            console.log(`    Meta group: ${c.groupId}`);
+          }
         }
-      }
-
-      db.close();
+      });
     });
 }

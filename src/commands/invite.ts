@@ -1,6 +1,4 @@
 import type { Command } from "commander";
-import { loadConfig } from "../config.js";
-import { createDatabase } from "../storage/db.js";
 import { CommunityManager } from "../community/manager.js";
 import {
   createInvite,
@@ -8,7 +6,7 @@ import {
   encodeInvite,
   decodeInvite,
 } from "../community/invites.js";
-import { bootstrap } from "./shared.js";
+import { bootstrap, withDatabase } from "./shared.js";
 
 export function registerInviteCommands(program: Command): void {
   // ─── invite ───────────────────────────────────────────────────────────────
@@ -37,38 +35,35 @@ export function registerInviteCommands(program: Command): void {
         }
 
         const { config, bsky, xmtp, privateKey } = await bootstrap();
-        const db = createDatabase(config.sqlitePath);
+        await withDatabase(config.sqlitePath, async (db) => {
+          const manager = new CommunityManager(xmtp, db);
+          const state = await manager.syncCommunityState(metaGroupId);
+          const communityName = state.config?.name ?? "Unknown";
 
-        const manager = new CommunityManager(xmtp, db);
-        const state = await manager.syncCommunityState(metaGroupId);
-        const communityName = state.config?.name ?? "Unknown";
+          const expiryHours = parseInt(opts.expiry, 10);
+          if (!Number.isFinite(expiryHours) || expiryHours < 1) {
+            console.error(
+              `Invalid expiry: "${opts.expiry}". Must be a positive integer (hours).`,
+            );
+            return;
+          }
 
-        const expiryHours = parseInt(opts.expiry, 10);
-        if (!Number.isFinite(expiryHours) || expiryHours < 1) {
-          console.error(
-            `Invalid expiry: "${opts.expiry}". Must be a positive integer (hours).`,
+          const invite = await createInvite(
+            privateKey,
+            communityName,
+            metaGroupId,
+            bsky.did,
+            opts.role as "member" | "moderator",
+            expiryHours,
           );
-          db.close();
-          return;
-        }
 
-        const invite = await createInvite(
-          privateKey,
-          communityName,
-          metaGroupId,
-          bsky.did,
-          opts.role as "member" | "moderator",
-          expiryHours,
-        );
-
-        const encoded = encodeInvite(invite);
-        console.log("\nInvite token generated!");
-        console.log(`Community: ${communityName}`);
-        console.log(`Role: ${invite.role}`);
-        console.log(`Expires: ${invite.expiry}`);
-        console.log(`\nShare this token:\n${encoded}`);
-
-        db.close();
+          const encoded = encodeInvite(invite);
+          console.log("\nInvite token generated!");
+          console.log(`Community: ${communityName}`);
+          console.log(`Role: ${invite.role}`);
+          console.log(`Expires: ${invite.expiry}`);
+          console.log(`\nShare this token:\n${encoded}`);
+        });
       },
     );
 

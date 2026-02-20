@@ -92,6 +92,18 @@ export async function ensureCredentials(config: Config): Promise<Config> {
   };
 }
 
+export async function withDatabase<T>(
+  sqlitePath: string,
+  fn: (db: import("better-sqlite3").Database) => T | Promise<T>,
+): Promise<T> {
+  const db = createDatabase(sqlitePath);
+  try {
+    return await fn(db);
+  } finally {
+    db.close();
+  }
+}
+
 export async function recoverAndFinish(
   config: Config,
   bsky: { agent: AtpAgent; did: string; handle: string },
@@ -106,15 +118,15 @@ export async function recoverAndFinish(
     await storeKey(bsky.handle, privateKey);
   }
 
-  const db = createDatabase(config.sqlitePath);
-  const manager = new CommunityManager(xmtp, db);
-  const result = await manager.recoverAllCommunities({
-    onProgress: (msg) => console.log(`  ${msg}`),
+  await withDatabase(config.sqlitePath, async (db) => {
+    const manager = new CommunityManager(xmtp, db);
+    const result = await manager.recoverAllCommunities({
+      onProgress: (msg) => console.log(`  ${msg}`),
+    });
+    console.log(
+      `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
+    );
   });
-  console.log(
-    `Recovered ${result.communities.length} community(ies), ${result.channelsRecovered} channels.`,
-  );
-  db.close();
 
   await publishMaverickRecord(bsky.agent, xmtp);
   saveSession(bsky.handle, config.bluesky.password);
