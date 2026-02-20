@@ -1,17 +1,19 @@
 import { describe, it, expect } from "vitest";
 import {
-  replayMetaChannel,
   replayMetaChannelWithSenders,
-  applyMetaMessage,
-  createEmptyState,
 } from "../src/community/state.js";
 import type { MetaMessage } from "../src/community/meta-types.js";
 import type { SenderTaggedMessage } from "../src/community/state.js";
 
-describe("replayMetaChannel", () => {
+/** Test helper: wrap a MetaMessage with a sender inboxId for authorization. */
+function tagged(msg: MetaMessage, sender = "test-creator"): SenderTaggedMessage {
+  return { message: msg, senderInboxId: sender };
+}
+
+describe("replayMetaChannelWithSenders — basic state building", () => {
   it("builds state from community.config", () => {
-    const messages: MetaMessage[] = [
-      {
+    const state = replayMetaChannelWithSenders([
+      tagged({
         type: "community.config",
         name: "Test Community",
         description: "A test",
@@ -19,44 +21,46 @@ describe("replayMetaChannel", () => {
           allowMemberInvites: true,
           defaultChannelPermissions: "open",
         },
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }),
+    ]);
     expect(state.config).not.toBeNull();
     expect(state.config!.name).toBe("Test Community");
   });
 
   it("tracks channels from creation through archival", () => {
-    const messages: MetaMessage[] = [
-      {
+    const CREATOR = "test-creator";
+    const state = replayMetaChannelWithSenders([
+      tagged({
+        type: "community.config",
+        name: "Test",
+        settings: { allowMemberInvites: true, defaultChannelPermissions: "open" },
+      }, CREATOR),
+      tagged({
         type: "channel.created",
         channelId: "ch-1",
         name: "general",
         xmtpGroupId: "grp-1",
         permissions: "open",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.created",
         channelId: "ch-2",
         name: "dev",
         xmtpGroupId: "grp-2",
         permissions: "moderated",
         category: "engineering",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.updated",
         channelId: "ch-1",
         name: "general-chat",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.archived",
         channelId: "ch-2",
         reason: "Merged into general",
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
 
     expect(state.channels.size).toBe(2);
 
@@ -70,124 +74,135 @@ describe("replayMetaChannel", () => {
   });
 
   it("tracks role assignments", () => {
-    const messages: MetaMessage[] = [
-      {
+    const CREATOR = "test-creator";
+    const state = replayMetaChannelWithSenders([
+      tagged({
+        type: "community.config",
+        name: "Test",
+        settings: { allowMemberInvites: true, defaultChannelPermissions: "open" },
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:alice",
         role: "admin",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:bob",
         role: "moderator",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:alice",
         role: "owner",
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
     expect(state.roles.get("did:plc:alice")).toBe("owner");
     expect(state.roles.get("did:plc:bob")).toBe("moderator");
   });
 
   it("tracks bans and unbans", () => {
-    const messages: MetaMessage[] = [
-      {
+    const CREATOR = "test-creator";
+    const state = replayMetaChannelWithSenders([
+      tagged({
+        type: "community.config",
+        name: "Test",
+        settings: { allowMemberInvites: true, defaultChannelPermissions: "open" },
+      }, CREATOR),
+      tagged({
         type: "moderation.action",
         action: "ban",
         targetDid: "did:plc:spammer",
         reason: "spam",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "moderation.action",
         action: "ban",
         targetDid: "did:plc:troll",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "moderation.action",
         action: "unban",
         targetDid: "did:plc:spammer",
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
     expect(state.bans.has("did:plc:spammer")).toBe(false);
     expect(state.bans.has("did:plc:troll")).toBe(true);
   });
 
   it("collects announcements", () => {
-    const messages: MetaMessage[] = [
-      {
+    const CREATOR = "test-creator";
+    const state = replayMetaChannelWithSenders([
+      tagged({
+        type: "community.config",
+        name: "Test",
+        settings: { allowMemberInvites: true, defaultChannelPermissions: "open" },
+      }, CREATOR),
+      tagged({
         type: "community.announcement",
         title: "Welcome",
         body: "Welcome to the community!",
         priority: "important",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.announcement",
         title: "Update",
         body: "New rules posted",
         priority: "normal",
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
     expect(state.announcements).toHaveLength(2);
     expect(state.announcements[0].title).toBe("Welcome");
   });
 
   it("handles full community lifecycle", () => {
-    const messages: MetaMessage[] = [
-      {
+    const CREATOR = "test-creator";
+    const state = replayMetaChannelWithSenders([
+      tagged({
         type: "community.config",
         name: "Maverick HQ",
         settings: {
           allowMemberInvites: false,
           defaultChannelPermissions: "moderated",
         },
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:founder",
         role: "owner",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.created",
         channelId: "ch-general",
         name: "general",
         xmtpGroupId: "xg-1",
         permissions: "open",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.created",
         channelId: "ch-dev",
         name: "dev",
         xmtpGroupId: "xg-2",
         permissions: "moderated",
         category: "tech",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:admin1",
         role: "admin",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.announcement",
         title: "Launch!",
         body: "Community is live",
         priority: "important",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.updated",
         channelId: "ch-dev",
         description: "Development discussion",
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
 
     expect(state.config!.name).toBe("Maverick HQ");
     expect(state.channels.size).toBe(2);
@@ -201,25 +216,34 @@ describe("replayMetaChannel", () => {
   });
 });
 
-describe("applyMetaMessage", () => {
-  it("mutates state in place", () => {
-    const state = createEmptyState();
-    applyMetaMessage(state, {
-      type: "community.config",
-      name: "Test",
-      settings: {
-        allowMemberInvites: true,
-        defaultChannelPermissions: "open",
-      },
-    });
+describe("replayMetaChannelWithSenders — single message", () => {
+  it("applies a single config message", () => {
+    const state = replayMetaChannelWithSenders([
+      tagged({
+        type: "community.config",
+        name: "Test",
+        settings: {
+          allowMemberInvites: true,
+          defaultChannelPermissions: "open",
+        },
+      }),
+    ]);
     expect(state.config!.name).toBe("Test");
   });
 });
 
 describe("community.snapshot", () => {
+  const CREATOR = "test-creator";
+
   it("replaces state wholesale from a snapshot", () => {
-    const messages: MetaMessage[] = [
-      {
+    // A snapshot must come after a config that bootstraps the creator
+    const state = replayMetaChannelWithSenders([
+      tagged({
+        type: "community.config",
+        name: "Initial",
+        settings: { allowMemberInvites: true, defaultChannelPermissions: "open" },
+      }, CREATOR),
+      tagged({
         type: "community.snapshot",
         config: {
           name: "Snapshot Community",
@@ -248,10 +272,8 @@ describe("community.snapshot", () => {
           { did: "did:plc:bob", role: "member" },
         ],
         bans: ["did:plc:spammer"],
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
 
     expect(state.config!.name).toBe("Snapshot Community");
     expect(state.config!.type).toBe("community.config");
@@ -265,30 +287,30 @@ describe("community.snapshot", () => {
   });
 
   it("snapshot clears previous state before applying", () => {
-    const messages: MetaMessage[] = [
+    const state = replayMetaChannelWithSenders([
       // Pre-snapshot events
-      {
+      tagged({
         type: "community.config",
         name: "Old Name",
         settings: {
           allowMemberInvites: false,
           defaultChannelPermissions: "moderated",
         },
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.created",
         channelId: "ch-old",
         name: "old-channel",
         xmtpGroupId: "xg-old",
         permissions: "open",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:removed",
         role: "admin",
-      },
+      }, CREATOR),
       // Snapshot replaces everything
-      {
+      tagged({
         type: "community.snapshot",
         config: {
           name: "New Name",
@@ -307,10 +329,8 @@ describe("community.snapshot", () => {
         ],
         roles: [{ did: "did:plc:alice", role: "owner" }],
         bans: [],
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
 
     // Old state is gone
     expect(state.config!.name).toBe("New Name");
@@ -324,8 +344,14 @@ describe("community.snapshot", () => {
   });
 
   it("events after snapshot stack on top correctly", () => {
-    const messages: MetaMessage[] = [
-      {
+    const state = replayMetaChannelWithSenders([
+      // Bootstrap creator first so snapshot is accepted
+      tagged({
+        type: "community.config",
+        name: "Initial",
+        settings: { allowMemberInvites: true, defaultChannelPermissions: "open" },
+      }, CREATOR),
+      tagged({
         type: "community.snapshot",
         config: {
           name: "Base",
@@ -344,33 +370,31 @@ describe("community.snapshot", () => {
         ],
         roles: [{ did: "did:plc:alice", role: "owner" }],
         bans: [],
-      },
-      // Post-snapshot events
-      {
+      }, CREATOR),
+      // Post-snapshot events (all from creator who has owner authority)
+      tagged({
         type: "channel.created",
         channelId: "ch-2",
         name: "dev",
         xmtpGroupId: "xg-2",
         permissions: "moderated",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "channel.updated",
         channelId: "ch-1",
         name: "lobby",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "community.role",
         targetDid: "did:plc:bob",
         role: "moderator",
-      },
-      {
+      }, CREATOR),
+      tagged({
         type: "moderation.action",
         action: "ban",
         targetDid: "did:plc:troll",
-      },
-    ];
-
-    const state = replayMetaChannel(messages);
+      }, CREATOR),
+    ]);
 
     expect(state.channels.size).toBe(2);
     expect(state.channels.get("ch-1")!.name).toBe("lobby");

@@ -4,11 +4,15 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createDatabase } from "../src/storage/db.js";
 import {
-  replayMetaChannel,
-  applyMetaMessage,
-  createEmptyState,
+  replayMetaChannelWithSenders,
 } from "../src/community/state.js";
 import type { MetaMessage } from "../src/community/meta-types.js";
+import type { SenderTaggedMessage } from "../src/community/state.js";
+
+/** Test helper: wrap a MetaMessage with a sender inboxId for authorization. */
+function tagged(msg: MetaMessage, sender = "test-creator"): SenderTaggedMessage {
+  return { message: msg, senderInboxId: sender };
+}
 import { MetaMessageCodec } from "../src/community/meta-codec.js";
 import { MaverickMessageCodec } from "../src/messaging/codec.js";
 import type { MaverickMessage } from "../src/messaging/types.js";
@@ -112,8 +116,11 @@ describe("full community lifecycle (mock)", () => {
       expect(decoded).toEqual(msg);
     }
 
-    // Replay to build state
-    const state = replayMetaChannel(metaMessages);
+    // Replay to build state (all messages from a single creator sender)
+    const CREATOR = "inbox-alice";
+    const state = replayMetaChannelWithSenders(
+      metaMessages.map((m) => tagged(m, CREATOR)),
+    );
 
     expect(state.config!.name).toBe("Test Community");
     expect(state.channels.size).toBe(2);
@@ -367,6 +374,7 @@ describe("full community lifecycle (mock)", () => {
   });
 
   it("handles channel lifecycle: create, update, archive", () => {
+    const CREATOR = "inbox-lifecycle";
     const metaMessages: MetaMessage[] = [
       {
         type: "community.config",
@@ -393,7 +401,9 @@ describe("full community lifecycle (mock)", () => {
       },
     ];
 
-    let state = replayMetaChannel(metaMessages);
+    let state = replayMetaChannelWithSenders(
+      metaMessages.map((m) => tagged(m, CREATOR)),
+    );
     const ch = state.channels.get("ch-temp")!;
     expect(ch.name).toBe("not-so-temporary");
     expect(ch.description).toBe("Actually useful");
@@ -407,11 +417,14 @@ describe("full community lifecycle (mock)", () => {
       reason: "No longer needed",
     });
 
-    state = replayMetaChannel(metaMessages);
+    state = replayMetaChannelWithSenders(
+      metaMessages.map((m) => tagged(m, CREATOR)),
+    );
     expect(state.channels.get("ch-temp")!.archived).toBe(true);
   });
 
   it("handles moderation: ban, unban, re-ban", () => {
+    const CREATOR = "inbox-mod-test";
     const metaMessages: MetaMessage[] = [
       {
         type: "community.config",
@@ -424,7 +437,9 @@ describe("full community lifecycle (mock)", () => {
       { type: "moderation.action", action: "ban", targetDid: "did:plc:spammer", reason: "more spam" },
     ];
 
-    const state = replayMetaChannel(metaMessages);
+    const state = replayMetaChannelWithSenders(
+      metaMessages.map((m) => tagged(m, CREATOR)),
+    );
     expect(state.bans.has("did:plc:spammer")).toBe(true); // re-banned
     expect(state.bans.has("did:plc:troll")).toBe(true);
     expect(state.bans.size).toBe(2);
