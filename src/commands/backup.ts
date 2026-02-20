@@ -1,9 +1,9 @@
-import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config.js";
 import { getCachedPrivateKey } from "../identity/xmtp.js";
+import { encrypt, decrypt, IV_SIZE_V1, IV_SIZE_V2 } from "../utils/aes-gcm.js";
 import { createPrompt } from "./shared.js";
 
 export function registerBackupCommands(program: Command): void {
@@ -49,8 +49,6 @@ export function registerBackupCommands(program: Command): void {
         : Buffer.alloc(0);
 
       // Read the XMTP private key so the backup is self-contained.
-      // Without the key the restored XMTP database is unreadable (encrypted with
-      // a different key than whatever the user generates on next login).
       let privateKeyBuf = Buffer.alloc(0);
       let privateKeyIncluded = false;
       if (config.bluesky.handle) {
@@ -75,26 +73,16 @@ export function registerBackupCommands(program: Command): void {
         );
       }
 
-      // Encrypt: scrypt key derivation + AES-256-GCM
-      // 12-byte (96-bit) IV per NIST SP 800-38D recommendation for GCM.
-      const salt = randomBytes(32);
-      const iv = randomBytes(12);
-      const key = scryptSync(passphrase, salt, 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
-      const cipher = createCipheriv("aes-256-gcm", key, iv);
-
       // v3 Payload: [4B xmtpDbSize LE] [xmtpDb] [4B maverickDbSize LE] [maverickDb] [privateKey UTF-8]
-      // The private key occupies the remaining bytes after the two sized segments.
       const xmtpSizeBuf = Buffer.alloc(4);
       xmtpSizeBuf.writeUInt32LE(xmtpDb.length, 0);
       const mavSizeBuf = Buffer.alloc(4);
       mavSizeBuf.writeUInt32LE(maverickDb.length, 0);
       const plaintext = Buffer.concat([xmtpSizeBuf, xmtpDb, mavSizeBuf, maverickDb, privateKeyBuf]);
 
-      const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
-      const authTag = cipher.getAuthTag();
+      const { salt, iv, encrypted, authTag } = encrypt(plaintext, passphrase);
 
       // File format: [header JSON + newline] [salt 32B] [iv 12B] [authTag 16B] [encrypted]
-      // Version 3 adds the XMTP private key to the encrypted payload.
       const header = JSON.stringify({
         version: 3,
         createdAt: new Date().toISOString(),
@@ -166,9 +154,8 @@ export function registerBackupCommands(program: Command): void {
         process.exit(1);
       }
 
-      // Read crypto params
-      // v1 used a 16-byte IV; v2+ uses 12 bytes (NIST SP 800-38D recommended).
-      const ivSize = header.version === 1 ? 16 : 12;
+      // Read crypto params — v1 used 16-byte IV, v2+ uses 12 bytes
+      const ivSize = header.version === 1 ? IV_SIZE_V1 : IV_SIZE_V2;
       const salt = data.subarray(offset, offset + 32);
       offset += 32;
       const iv = data.subarray(offset, offset + ivSize);
@@ -178,13 +165,9 @@ export function registerBackupCommands(program: Command): void {
       const encrypted = data.subarray(offset);
 
       // Decrypt
-      const key = scryptSync(passphrase, salt, 32, { N: 2 ** 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
-      const decipher = createDecipheriv("aes-256-gcm", key, iv);
-      decipher.setAuthTag(authTag);
-
       let plaintext: Buffer;
       try {
-        plaintext = Buffer.concat([decipher.update(encrypted), decipher.final()]);
+        plaintext = decrypt(encrypted, passphrase, salt, iv, authTag);
       } catch {
         console.error("Decryption failed. Wrong passphrase or corrupted backup.");
         process.exit(1);

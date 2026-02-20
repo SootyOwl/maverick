@@ -4,8 +4,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { createDecipheriv, scryptSync } from "node:crypto";
-import { SCRYPT_PARAMS } from "../utils/crypto-constants.js";
+import { createDecipheriv } from "node:crypto";
+import { deriveKey } from "../utils/aes-gcm.js";
 import { KeychainStrategy } from "./keychain-strategy.js";
 
 // Key storage with OS keychain (primary) + plaintext 0600 file (fallback).
@@ -62,15 +62,6 @@ const strategy = new KeychainStrategy({
 });
 
 // ── Legacy decryption (old passphrase-encrypted format) ──────────────────
-
-function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return scryptSync(passphrase, salt, SCRYPT_PARAMS.keyLen, {
-    N: SCRYPT_PARAMS.N,
-    r: SCRYPT_PARAMS.r,
-    p: SCRYPT_PARAMS.p,
-    maxmem: SCRYPT_PARAMS.maxmem,
-  }) as Buffer;
-}
 
 function decryptEncrypted(stored: string, passphrase: string): string | null {
   try {
