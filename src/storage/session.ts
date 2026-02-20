@@ -1,13 +1,20 @@
-import { Entry } from "@napi-rs/keyring";
 import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { KeychainStrategy } from "./keychain-strategy.js";
 
-const SERVICE = "maverick";
+// Session storage: Bluesky handle + app password.
+//
+// Keyring backend: two separate entries ("handle", "password").
+// File fallback: a single JSON file at ~/.maverick/session.json (0600).
+//
+// Uses KeychainStrategy for keyring probe/cache/warn logic, but manages
+// the composite JSON file itself (strategy's per-account file ops don't
+// apply here since both values share one file).
 
-// File-based fallback when OS keychain is unavailable.
-// Stored at ~/.maverick/session.json with 0600 permissions (owner-only),
-// same pattern as Git credential store and SSH keys.
+const HANDLE_ACCOUNT = "handle";
+const PASSWORD_ACCOUNT = "password";
+
 function sessionFilePath(): string {
   return join(
     process.env.MAVERICK_DATA_DIR ?? join(homedir(), ".maverick"),
@@ -15,58 +22,16 @@ function sessionFilePath(): string {
   );
 }
 
-function keyringAvailable(): boolean {
-  try {
-    const probe = new Entry(SERVICE, "__probe__");
-    probe.setPassword("ok");
-    probe.deletePassword();
-    return true;
-  } catch {
-    return false;
-  }
-}
+// Strategy instance — used for keyring probe + keyring-only operations.
+// filePath is unused (session manages its own composite file) but required
+// by the interface, so we point it at the session.json path.
+const strategy = new KeychainStrategy({
+  service: "maverick",
+  filePath: () => sessionFilePath(),
+  fallbackLabel: "credentials",
+});
 
-// Cache the probe result for the lifetime of the process
-let _keyringOk: boolean | undefined;
-let _warnedFallback = false;
-function useKeyring(): boolean {
-  if (_keyringOk === undefined) {
-    _keyringOk = keyringAvailable();
-  }
-  return _keyringOk;
-}
-
-function warnFallback(): void {
-  if (_warnedFallback) return;
-  _warnedFallback = true;
-  const path = sessionFilePath();
-  console.warn(
-    `[maverick] OS keychain unavailable — credentials saved to ${path} (mode 0600)`,
-  );
-}
-
-// ── Keyring backend ──────────────────────────────────────────────────────
-
-function saveToKeyring(handle: string, password: string): void {
-  new Entry(SERVICE, "handle").setPassword(handle);
-  new Entry(SERVICE, "password").setPassword(password);
-}
-
-function loadFromKeyring(): { handle: string; password: string } | null {
-  const handle = new Entry(SERVICE, "handle").getPassword();
-  const password = new Entry(SERVICE, "password").getPassword();
-  if (handle && password) {
-    return { handle, password };
-  }
-  return null;
-}
-
-function clearKeyring(): void {
-  try { new Entry(SERVICE, "handle").deletePassword(); } catch { /* may not exist */ }
-  try { new Entry(SERVICE, "password").deletePassword(); } catch { /* may not exist */ }
-}
-
-// ── File backend ─────────────────────────────────────────────────────────
+// ── File backend (composite JSON) ─────────────────────────────────────
 
 function saveToFile(handle: string, password: string): void {
   const filePath = sessionFilePath();
@@ -99,24 +64,31 @@ function clearFile(): void {
 // ── Public API ───────────────────────────────────────────────────────────
 
 export function saveSession(handle: string, password: string): void {
-  if (useKeyring()) {
-    saveToKeyring(handle, password);
+  if (strategy.useKeyring()) {
+    strategy.saveToKeyring(HANDLE_ACCOUNT, handle);
+    strategy.saveToKeyring(PASSWORD_ACCOUNT, password);
   } else {
-    warnFallback();
+    strategy.warnFallback();
     saveToFile(handle, password);
   }
 }
 
 export function loadSession(): { handle: string; password: string } | null {
-  if (useKeyring()) {
-    return loadFromKeyring();
+  if (strategy.useKeyring()) {
+    const handle = strategy.loadFromKeyring(HANDLE_ACCOUNT);
+    const password = strategy.loadFromKeyring(PASSWORD_ACCOUNT);
+    if (handle && password) {
+      return { handle, password };
+    }
+    return null;
   }
   return loadFromFile();
 }
 
 export function clearSession(): void {
-  if (useKeyring()) {
-    clearKeyring();
+  if (strategy.useKeyring()) {
+    strategy.deleteFromKeyring(HANDLE_ACCOUNT);
+    strategy.deleteFromKeyring(PASSWORD_ACCOUNT);
   }
   clearFile(); // always clean up file too, in case backend switched
 }

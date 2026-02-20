@@ -1,16 +1,29 @@
-import { mkdirSync, readFileSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  existsSync,
+} from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
-import {
-  randomBytes,
-  createCipheriv,
-  createDecipheriv,
-  scryptSync,
-} from "node:crypto";
+import { createDecipheriv } from "node:crypto";
+import { deriveKey } from "../utils/aes-gcm.js";
+import { KeychainStrategy } from "./keychain-strategy.js";
 
-// File-based key storage with AES-256-GCM encryption at rest.
-// Keys are encrypted using a passphrase (the Bluesky app password) via scrypt KDF.
-// Stored in ~/.maverick/keys/<handle>.key (or overridden via __MAVERICK_KEYS_DIR for testing).
+// Key storage with OS keychain (primary) + plaintext 0600 file (fallback).
+//
+// The old system encrypted keys with the Bluesky app password via scrypt.
+// The new system caches keys in the OS keychain with a plaintext 0600 file
+// fallback — same security model as ~/.ssh/id_ed25519.
+//
+// This decouples key storage from the Bluesky password. The key itself is
+// derived from the recovery phrase (handled by recovery-phrase.ts).
+//
+// File location: ~/.maverick/keys/<handle>.key
+// Keychain account: "xmtp-key-<sanitized_handle>"
+//
+// Override via __MAVERICK_KEYS_DIR for testing (file backend only).
+// Override via __MAVERICK_KEYRING_DISABLE=1 to force file-only mode in tests.
+
+// ── Directory + path helpers ─────────────────────────────────────────────
 
 function getKeysDir(): string {
   if (process.env.__MAVERICK_KEYS_DIR) {
@@ -19,45 +32,38 @@ function getKeysDir(): string {
   return join(homedir(), ".maverick", "keys");
 }
 
-function ensureKeysDir(): void {
-  mkdirSync(getKeysDir(), { recursive: true });
+function sanitizeHandle(handle: string): string {
+  return handle.replace(/[^a-zA-Z0-9._-]/g, "_");
 }
 
 function keyPath(handle: string): string {
-  // Sanitize handle for filesystem
-  const safe = handle.replace(/[^a-zA-Z0-9._-]/g, "_");
-  return join(getKeysDir(), `${safe}.key`);
+  return join(getKeysDir(), `${sanitizeHandle(handle)}.key`);
 }
 
-// Derive an AES-256 key from the passphrase using scrypt.
-// Parameters: N=2^17 (131072), r=8, p=1 — per OWASP 2024 recommendations
-// for moderate security. The default Node.js N=16384 is too weak for
-// protecting long-lived private keys against offline brute-force.
-const SCRYPT_OPTIONS = { N: 131072, r: 8, p: 1, maxmem: 256 * 1024 * 1024 };
+// ── Strategy instance ────────────────────────────────────────────────────
+//
+// The logical "account" passed to save/load/delete is the raw handle.
+// keyringAccount maps it to "xmtp-key-<sanitized>" for the OS keychain.
+// filePath maps it to ~/.maverick/keys/<sanitized>.key.
 
-function deriveKey(passphrase: string, salt: Buffer): Buffer {
-  return scryptSync(passphrase, salt, 32, SCRYPT_OPTIONS) as Buffer;
-}
+const strategy = new KeychainStrategy({
+  service: "maverick",
+  filePath: (handle: string) => keyPath(handle),
+  keyringAccount: (handle: string) => `xmtp-key-${sanitizeHandle(handle)}`,
+  cacheDir: getKeysDir,
+  fallbackLabel: `XMTP keys`,
+  fileValidator: (raw: string) => {
+    // Only accept raw hex keys (new plaintext format) — not encrypted JSON
+    if (raw.startsWith("0x") && !raw.includes("{")) {
+      return raw;
+    }
+    return null;
+  },
+});
 
-function encrypt(data: string, passphrase: string): string {
-  const salt = randomBytes(16);
-  const key = deriveKey(passphrase, salt);
-  const iv = randomBytes(12); // GCM uses 12-byte IV
-  const cipher = createCipheriv("aes-256-gcm", key, iv);
-  const encrypted = Buffer.concat([
-    cipher.update(data, "utf-8"),
-    cipher.final(),
-  ]);
-  const authTag = cipher.getAuthTag();
-  return JSON.stringify({
-    salt: salt.toString("base64"),
-    iv: iv.toString("base64"),
-    encrypted: encrypted.toString("base64"),
-    tag: authTag.toString("base64"),
-  });
-}
+// ── Legacy decryption (old passphrase-encrypted format) ──────────────────
 
-function decrypt(stored: string, passphrase: string): string | null {
+function decryptEncrypted(stored: string, passphrase: string): string | null {
   try {
     const { salt, iv, encrypted, tag } = JSON.parse(stored);
     const key = deriveKey(passphrase, Buffer.from(salt, "base64"));
@@ -77,44 +83,99 @@ function decrypt(stored: string, passphrase: string): string | null {
   }
 }
 
-export async function getStoredKey(
+// ── Public API ───────────────────────────────────────────────────────────
+
+/**
+ * Reset cached keyring state. Only for testing.
+ */
+export function _resetKeyringCache(): void {
+  strategy._reset();
+}
+
+/**
+ * Retrieve the stored XMTP private key for a handle.
+ * Tries keychain first (faster, more secure), then plaintext file fallback.
+ * Returns null if no key is stored.
+ */
+export async function getStoredKey(handle: string): Promise<string | null> {
+  return strategy.load(handle);
+}
+
+/**
+ * Store an XMTP private key for a handle.
+ * Writes to both keychain and plaintext 0600 file for redundancy.
+ */
+export async function storeKey(
+  handle: string,
+  privateKey: string,
+): Promise<void> {
+  strategy.save(handle, privateKey);
+}
+
+/**
+ * Delete the stored key from all backends (keychain + file).
+ */
+export async function deleteKey(handle: string): Promise<void> {
+  strategy.delete(handle);
+}
+
+/**
+ * Decrypt a legacy passphrase-encrypted key file.
+ * Returns the decrypted key or null if decryption fails / no file exists.
+ * Does NOT migrate the key — call migrateLegacyKey() for that.
+ */
+export async function decryptLegacyKey(
   handle: string,
   passphrase: string,
 ): Promise<string | null> {
   const path = keyPath(handle);
   try {
     const raw = readFileSync(path, "utf-8").trim();
-
-    // Try as encrypted JSON first
     if (raw.startsWith("{")) {
-      return decrypt(raw, passphrase);
+      return decryptEncrypted(raw, passphrase);
     }
-
-    // Legacy plaintext key -- migrate by re-encrypting
+    // If it's already plaintext hex, return it directly
     if (raw.startsWith("0x")) {
-      await storeKey(handle, raw, passphrase);
       return raw;
     }
-
     return null;
   } catch {
     return null;
   }
 }
 
-export async function storeKey(
+/**
+ * Migrate a legacy passphrase-encrypted key to the new storage system.
+ * Reads the old encrypted file, decrypts with passphrase, stores via new
+ * storeKey (keychain + plaintext file), and deletes the old encrypted file
+ * before writing the new one.
+ *
+ * Returns the decrypted key on success, null on failure.
+ */
+export async function migrateLegacyKey(
   handle: string,
-  privateKey: string,
   passphrase: string,
-): Promise<void> {
-  ensureKeysDir();
-  const encrypted = encrypt(privateKey, passphrase);
-  writeFileSync(keyPath(handle), encrypted, { mode: 0o600 });
+): Promise<string | null> {
+  const decrypted = await decryptLegacyKey(handle, passphrase);
+  if (!decrypted) {
+    return null;
+  }
+
+  // Delete old file then store in new format
+  strategy.delete(handle);
+  await storeKey(handle, decrypted);
+  return decrypted;
 }
 
-export async function deleteKey(handle: string): Promise<void> {
+/**
+ * Check if a legacy (encrypted JSON) key file exists for a handle.
+ */
+export function hasLegacyKeyFile(handle: string): boolean {
   const path = keyPath(handle);
-  if (existsSync(path)) {
-    unlinkSync(path);
+  try {
+    const raw = readFileSync(path, "utf-8").trim();
+    return raw.startsWith("{");
+  } catch {
+    return false;
   }
 }

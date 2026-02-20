@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput, useApp } from "ink";
 import { theme, sym } from "../theme.js";
+import { Spinner } from "../components/Spinner.js";
 import { sanitize } from "../../utils/sanitize.js";
 import type { AuthSession, Screen } from "../hooks/useAppState.js";
 
@@ -12,22 +13,6 @@ interface CommunityEntry {
 interface CommunityListScreenProps {
   session: AuthSession;
   onNavigate: (screen: Screen) => void;
-}
-
-/** Animated spinner */
-function Spinner() {
-  const [frame, setFrame] = useState(0);
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((f) => (f + 1) % sym.spinnerFrames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, []);
-
-  return (
-    <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>
-  );
 }
 
 export function CommunityListScreen({

@@ -966,3 +966,64 @@ For the fastest path to a working prototype:
 7. **Tasks 12–13**: TUI (only after everything else works via CLI)
 
 At the end of Task 11, you should have a fully functional CLI chat app. The TUI is polish on top of working infrastructure.
+
+---
+
+## Git Conventions
+
+When asked for atomic commits, ALWAYS make separate commits for each logical change. Never combine multiple fixes into a single commit. If unsure, ask before committing.
+
+---
+
+## Build & Distribution
+
+This is a TypeScript project. Always ensure fixes work for end-user runtime (not just dev environment). Check that dependencies used in bin scripts and CLI entry points are production dependencies, not devDependencies.
+
+---
+
+## Debugging Guidelines
+
+When debugging, check the FULL error chain before proposing a fix. Specifically: check if errors are being silently swallowed, check if API calls require authentication, and check if redirects (HTTPS→HTTP) strip headers. Do not propose a fix until the root cause is confirmed.
+
+---
+
+## Code Review
+
+When the user asks for a code review or adversarial review, go directly to reading the relevant code/diff. Do NOT spend time on setup steps, starting 'chainlink sessions', or other meta-work. Start reading code immediately.
+
+---
+
+## Security & Credentials
+
+When implementing security or credential storage, always handle the case where OS-level services (keyring daemon, secure enclave) are unavailable. Provide a graceful fallback and a user-facing warning. Never silently fail.
+
+---
+
+## Design Patterns
+
+Always consider and apply proven design patterns when writing or modifying code. Before implementing any feature, identify which patterns fit the problem and use them consistently with the rest of the codebase. Reference: https://refactoring.guru/design-patterns/catalog
+
+### Patterns already in use — follow them:
+
+- **Event Sourcing** — Meta channel replay reconstructs community state from an ordered event log (`replayMetaChannel`). New community features must be modeled as new event types, not as mutable state.
+- **Repository / Data Access** — Storage layer (`storage/`) provides typed CRUD functions over SQLite. All DB access goes through these functions; never write raw SQL in business logic.
+- **Codec** — Encode/decode pairs (`meta-codec.ts`, `messaging/codec.ts`) serialize domain objects to wire format. Any new XMTP content type gets its own codec following the same `ContentCodec<T>` interface.
+- **Facade** — `CommunityManager` wraps complex multi-step operations (create community + group + config message) behind a single method. High-level orchestration belongs in facades, not scattered across callers.
+- **Observer / Stream** — Message streaming uses async iterators with cleanup functions. New real-time features should follow the same `stream() → for await → cleanup` pattern.
+- **Cache-aside** — Profile and community data is cached in SQLite, fetched from network only when missing or stale. New cacheable data should follow the same staleness check pattern.
+- **Graceful Degradation** — Keychain access falls back to `0600` file storage. Any OS-dependent feature must have a fallback path with a user-facing warning.
+
+### Patterns to apply when the situation fits:
+
+- **Strategy** — When behavior varies by configuration (e.g., channel permissions: open/moderated/read-only), use strategy objects or discriminated unions rather than if/else chains.
+- **Builder** — For complex object construction (XMTP group options, message payloads), use step-by-step builder methods that return `this` for chaining, producing the final object via `.build()`. Prefer this over constructors with many parameters.
+- **Result type** — For operations that can fail in expected ways, return `{ ok: true, value } | { ok: false, error }` instead of throwing. Reserve exceptions for truly unexpected failures.
+- **Chain of Responsibility** — When processing messages through multiple stages (decode → validate → store → render), compose handlers as a pipeline where each stage can process or pass along the request, rather than nesting calls.
+- **Dispose / Cleanup** — Resources with lifecycle (streams, DB connections, XMTP clients) must implement explicit cleanup. Return cleanup functions or use `try/finally` — never rely on GC for resource release.
+
+### Anti-patterns to avoid:
+
+- **God object** — No class should own both networking and storage. Split responsibilities across layers.
+- **Stringly-typed** — Use Zod schemas, TypeScript enums, or literal unions instead of raw strings for known value sets.
+- **Silent swallowing** — Never catch errors and do nothing. Log, re-throw, or return a Result — pick one.
+- **Implicit ordering** — If operations must happen in sequence, make the dependency explicit (await chains, pipeline stages) rather than relying on caller discipline.

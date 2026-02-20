@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(chainlink quick:*)",
-      "Bash(pnpm test:*)"
+      "Bash(pnpm test:*)",
+      "Bash(python3 -c \" import sys, json data = json.load\\(sys.stdin\\) for item in data: text = item.get\\(''text'', ''''\\) print\\(text[:8000]\\) \")",
+      "Bash(python3 -c \" import sys, json, re data = json.load\\(sys.stdin\\) for item in data: text = item.get\\(''text'', ''''\\) # Strip HTML tags to get readable text clean = re.sub\\(r''<[^>]+>'', '' '', text\\) # Collapse whitespace clean = re.sub\\(r''\\\\s+'', '' '', clean\\) # Find sections about inbox, installation, recovery # Split into sentences and find relevant ones sentences = clean.split\\(''.''\\) for s in sentences: s = s.strip\\(\\) if any\\(kw in s.lower\\(\\) for kw in [''inbox'', ''installation'', ''recover'', ''identity'', ''revoke'', ''new device'', ''sync'', ''conversation'', ''group'']\\): if len\\(s\\) > 30: print\\(s.strip\\(\\) + ''.''\\) print\\(\\) \")",
+      "mcp__chainlink-safe-fetch__safe_fetch",
+      "Bash(python3 -c \" import sys, json, re data = json.load\\(sys.stdin\\) for item in data: text = item.get\\(''text'', ''''\\) # Find all href URLs urls = re.findall\\(r''href=\"\"\\(/chat-apps/[^\"\"]+\\)\"\"'', text\\) for u in sorted\\(set\\(urls\\)\\): print\\(u\\) \")",
+      "WebFetch(domain:docs.xmtp.org)",
+      "Bash(chainlink session work:*)",
+      "Bash(python3:*)",
+      "Bash(chainlink close:*)"
     ]
   },
   "enableAllProjectMcpServers": true,

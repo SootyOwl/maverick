@@ -1,9 +1,7 @@
 import type {
   MetaMessage,
   CommunityConfig,
-  ChannelCreated,
   Announcement,
-  StateSnapshot,
 } from "./meta-types.js";
 
 export interface ChannelState {
@@ -45,6 +43,14 @@ interface AuthContext {
   authorizedSenders: Map<string, "owner" | "admin" | "moderator" | "member">;
 }
 
+/** Role hierarchy levels used for authorization comparisons. */
+const ROLE_HIERARCHY: Record<string, number> = {
+  owner: 4,
+  admin: 3,
+  moderator: 2,
+  member: 1,
+};
+
 export function createEmptyState(): CommunityState {
   return {
     config: null,
@@ -55,23 +61,6 @@ export function createEmptyState(): CommunityState {
     bannedInboxIds: new Set(),
     announcements: [],
   };
-}
-
-/**
- * Original replay function without sender authorization.
- * @deprecated Use `replayMetaChannelWithSenders` in production code.
- * This function does NOT verify sender permissions — any message is
- * blindly applied. It exists only for backward-compatible test helpers.
- * @internal
- */
-export function replayMetaChannel(messages: MetaMessage[]): CommunityState {
-  const state = createEmptyState();
-
-  for (const msg of messages) {
-    applyMetaMessage(state, msg);
-  }
-
-  return state;
 }
 
 /**
@@ -114,14 +103,7 @@ function hasMinRole(
     return minRole === "member"; // unknown senders have no role
   }
 
-  const hierarchy: Record<string, number> = {
-    owner: 4,
-    admin: 3,
-    moderator: 2,
-    member: 1,
-  };
-
-  return hierarchy[senderRole] >= hierarchy[minRole];
+  return ROLE_HIERARCHY[senderRole] >= ROLE_HIERARCHY[minRole];
 }
 
 /**
@@ -201,19 +183,12 @@ function applyMetaMessageWithAuth(
       if (!msg.targetDid || !msg.targetDid.trim()) break;
       if (msg.targetInboxId !== undefined && !msg.targetInboxId.trim()) break;
 
-      const hierarchy: Record<string, number> = {
-        owner: 4,
-        admin: 3,
-        moderator: 2,
-        member: 1,
-      };
-
       // Enforce role hierarchy (creator bypasses all checks).
       if (senderInboxId !== authCtx.creatorInboxId) {
-        const senderLevel = hierarchy[
+        const senderLevel = ROLE_HIERARCHY[
           authCtx.authorizedSenders.get(senderInboxId) ?? "member"
         ] ?? 0;
-        const newRoleLevel = hierarchy[msg.role] ?? 0;
+        const newRoleLevel = ROLE_HIERARCHY[msg.role] ?? 0;
 
         // 1. Cannot assign a role higher than your own level.
         if (newRoleLevel > senderLevel) break;
@@ -228,7 +203,7 @@ function applyMetaMessageWithAuth(
         const targetRoleByDid = authCtx.authorizedSenders.get(msg.targetDid);
         const targetCurrentRole = targetRoleByInboxId ?? targetRoleByDid;
         if (targetCurrentRole) {
-          const targetCurrentLevel = hierarchy[targetCurrentRole] ?? 0;
+          const targetCurrentLevel = ROLE_HIERARCHY[targetCurrentRole] ?? 0;
           if (targetCurrentLevel >= senderLevel) break;
         }
       }
@@ -260,10 +235,7 @@ function applyMetaMessageWithAuth(
       // Prevents moderators from banning admins/owners.
       if ((msg.action === "ban" || msg.action === "unban") && msg.targetDid?.trim()) {
         if (senderInboxId !== authCtx.creatorInboxId) {
-          const modHierarchy: Record<string, number> = {
-            owner: 4, admin: 3, moderator: 2, member: 1,
-          };
-          const senderLevel = modHierarchy[
+          const senderLevel = ROLE_HIERARCHY[
             authCtx.authorizedSenders.get(senderInboxId) ?? "member"
           ] ?? 0;
           // Check target's role by both DID and inboxId (target may be known by either key)
@@ -272,7 +244,7 @@ function applyMetaMessageWithAuth(
             : undefined;
           const targetRoleByDid = authCtx.authorizedSenders.get(msg.targetDid!);
           const targetRole = targetRoleByInboxId ?? targetRoleByDid;
-          const targetLevel = modHierarchy[targetRole ?? "member"] ?? 0;
+          const targetLevel = ROLE_HIERARCHY[targetRole ?? "member"] ?? 0;
           if (targetLevel >= senderLevel) break; // Cannot ban/unban peers or superiors
         }
 
@@ -353,110 +325,3 @@ function applyMetaMessageWithAuth(
   }
 }
 
-/**
- * Apply a single meta message without authorization.
- * @deprecated Use `applyMetaMessageWithAuth` (via `replayMetaChannelWithSenders`) in production code.
- * This function does NOT verify sender permissions.
- * @internal
- */
-export function applyMetaMessage(
-  state: CommunityState,
-  msg: MetaMessage,
-): void {
-  switch (msg.type) {
-    case "community.config":
-      state.config = msg;
-      break;
-
-    case "channel.created":
-      state.channels.set(msg.channelId, {
-        channelId: msg.channelId,
-        name: msg.name,
-        description: msg.description,
-        xmtpGroupId: msg.xmtpGroupId,
-        category: msg.category,
-        permissions: msg.permissions,
-        archived: false,
-      });
-      break;
-
-    case "channel.updated": {
-      const existing = state.channels.get(msg.channelId);
-      if (existing) {
-        if (msg.name !== undefined) existing.name = msg.name;
-        if (msg.description !== undefined)
-          existing.description = msg.description;
-        if (msg.category !== undefined) existing.category = msg.category;
-        if (msg.permissions !== undefined)
-          existing.permissions = msg.permissions;
-      }
-      break;
-    }
-
-    case "channel.archived": {
-      const ch = state.channels.get(msg.channelId);
-      if (ch) ch.archived = true;
-      break;
-    }
-
-    case "community.role":
-      state.roles.set(msg.targetDid, msg.role);
-      if (msg.targetInboxId) {
-        state.roleInboxIds.set(msg.targetDid, msg.targetInboxId);
-      }
-      break;
-
-    case "community.announcement":
-      state.announcements.push(msg);
-      break;
-
-    case "moderation.action":
-      if (msg.action === "ban" && msg.targetDid) {
-        state.bans.add(msg.targetDid);
-        if (msg.targetInboxId) state.bannedInboxIds.add(msg.targetInboxId);
-      } else if (msg.action === "unban" && msg.targetDid) {
-        state.bans.delete(msg.targetDid);
-        if (msg.targetInboxId) state.bannedInboxIds.delete(msg.targetInboxId);
-      }
-      break;
-
-    case "community.snapshot":
-      // Snapshot replaces state wholesale — used after adding new members
-      // so they see current state despite MLS forward secrecy.
-      state.config = {
-        type: "community.config" as const,
-        name: msg.config.name,
-        description: msg.config.description,
-        settings: msg.config.settings,
-      };
-      state.channels.clear();
-      for (const ch of msg.channels) {
-        state.channels.set(ch.channelId, {
-          channelId: ch.channelId,
-          name: ch.name,
-          description: ch.description,
-          xmtpGroupId: ch.xmtpGroupId,
-          category: ch.category,
-          permissions: ch.permissions,
-          archived: false,
-        });
-      }
-      state.roles.clear();
-      state.roleInboxIds.clear();
-      for (const r of msg.roles) {
-        state.roles.set(r.did, r.role);
-        if (r.inboxId) {
-          state.roleInboxIds.set(r.did, r.inboxId);
-        }
-      }
-      state.bans.clear();
-      state.bannedInboxIds.clear();
-      for (const did of msg.bans) {
-        state.bans.add(did);
-      }
-      for (const inboxId of msg.bannedInboxIds ?? []) {
-        state.bannedInboxIds.add(inboxId);
-      }
-      break;
-  }
-}

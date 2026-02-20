@@ -1,14 +1,13 @@
 import { Client, type Signer } from "@xmtp/node-sdk";
 import { IdentifierKind } from "@xmtp/node-sdk";
 import { createHmac } from "node:crypto";
-import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { privateKeyToAccount } from "viem/accounts";
 import { toBytes } from "viem";
 import type { Config } from "../config.js";
-import { getStoredKey, storeKey } from "../storage/keys.js";
+import { getStoredKey, storeKey, migrateLegacyKey } from "../storage/keys.js";
+import { generateRecoveryPhrase, derivePrivateKey } from "./recovery-phrase.js";
 import { MetaMessageCodec } from "../community/meta-codec.js";
 import { MaverickMessageCodec } from "../messaging/codec.js";
-
-export { generatePrivateKey };
 
 export function createEOASigner(privateKey: `0x${string}`): Signer {
   const account = privateKeyToAccount(privateKey);
@@ -28,44 +27,80 @@ export function createEOASigner(privateKey: `0x${string}`): Signer {
   };
 }
 
-export class KeyDecryptionError extends Error {
-  constructor(handle: string) {
-    super(
-      `Failed to decrypt XMTP private key for "${handle}". ` +
-      `This usually means your Bluesky app password changed since the key was stored. ` +
-      `If you changed your password, use your OLD password to recover your XMTP identity, ` +
-      `or delete ~/.maverick/keys/${handle.replace(/[^a-zA-Z0-9._-]/g, "_")}.key to generate a new identity (WARNING: this loses your existing XMTP inbox).`,
-    );
-    this.name = "KeyDecryptionError";
-  }
+/**
+ * Non-interactive: load a cached XMTP private key from the keychain/file.
+ * Returns null if no key is stored for this handle.
+ */
+export async function getCachedPrivateKey(
+  handle: string,
+): Promise<`0x${string}` | null> {
+  return (await getStoredKey(handle)) as `0x${string}` | null;
 }
 
-export async function getOrCreatePrivateKey(
+/**
+ * Create a new XMTP identity: generate a recovery phrase and derive the
+ * private key from it. The key is NOT cached yet — the caller must call
+ * commitIdentity() after the user has confirmed the recovery phrase.
+ *
+ * Returns both the recovery phrase (which the user must save) and the
+ * derived private key.
+ */
+export async function createNewIdentity(
+  _handle: string,
+  did: string,
+): Promise<{ recoveryPhrase: string; privateKey: `0x${string}` }> {
+  const recoveryPhrase = generateRecoveryPhrase();
+  const privateKey = derivePrivateKey(recoveryPhrase, did);
+  return { recoveryPhrase, privateKey };
+}
+
+/**
+ * Persist a newly-created XMTP private key after the user has confirmed
+ * their recovery phrase. Must be called after createNewIdentity() once the
+ * user has acknowledged and verified the phrase.
+ */
+export async function commitIdentity(
+  handle: string,
+  privateKey: `0x${string}`,
+): Promise<void> {
+  await storeKey(handle, privateKey);
+}
+
+/**
+ * Recover an XMTP identity from a recovery phrase: derive the private key
+ * from the phrase + DID and return it WITHOUT persisting.
+ *
+ * Callers MUST verify the key works (e.g. by calling createXmtpClient())
+ * before persisting it via storeKey(). Storing before verification can
+ * poison the key cache — a wrong recovery phrase would permanently cache
+ * an incorrect key, causing all subsequent logins to fail.
+ */
+export async function recoverIdentity(
+  _handle: string,
+  did: string,
+  phrase: string,
+): Promise<`0x${string}`> {
+  const privateKey = derivePrivateKey(phrase, did);
+  return privateKey;
+}
+
+/**
+ * Migrate a legacy passphrase-encrypted key file to the new storage system.
+ * Decrypts the old file with the Bluesky app password, stores it in the
+ * new format (keychain + plaintext 0600 file), and removes the encrypted file.
+ *
+ * Returns the decrypted key on success, null if no legacy file exists or
+ * decryption fails.
+ */
+export async function migrateLegacyIdentity(
   handle: string,
   passphrase: string,
-): Promise<`0x${string}`> {
-  const stored = await getStoredKey(handle, passphrase);
-  if (stored) {
-    return stored as `0x${string}`;
+): Promise<`0x${string}` | null> {
+  const key = await migrateLegacyKey(handle, passphrase);
+  if (key) {
+    return key as `0x${string}`;
   }
-
-  // Check if a key file exists but couldn't be decrypted (wrong passphrase).
-  // This prevents silently generating a new key when the user changed their
-  // Bluesky app password, which would permanently lose their XMTP identity.
-  const { existsSync } = await import("node:fs");
-  const { join } = await import("node:path");
-  const { homedir } = await import("node:os");
-  const keysDir = process.env.__MAVERICK_KEYS_DIR ?? join(homedir(), ".maverick", "keys");
-  const safe = handle.replace(/[^a-zA-Z0-9._-]/g, "_");
-  const keyFile = join(keysDir, `${safe}.key`);
-
-  if (existsSync(keyFile)) {
-    throw new KeyDecryptionError(handle);
-  }
-
-  const key = generatePrivateKey();
-  await storeKey(handle, key, passphrase);
-  return key;
+  return null;
 }
 
 export async function createXmtpClient(

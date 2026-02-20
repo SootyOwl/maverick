@@ -1,8 +1,12 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import { theme, sym } from "../theme.js";
+import { Spinner } from "../components/Spinner.js";
 import { sanitize } from "../../utils/sanitize.js";
 import { TextInput } from "../components/TextInput.js";
+import { resolveHandleToInbox } from "../../identity/resolver.js";
+import { upsertProfile } from "../../storage/profiles.js";
+import { createInvite, encodeInvite } from "../../community/invites.js";
 import type { AuthSession } from "../hooks/useAppState.js";
 
 interface AddMemberScreenProps {
@@ -13,17 +17,6 @@ interface AddMemberScreenProps {
 }
 
 type Status = "idle" | "resolving" | "adding" | "generating" | "done" | "error";
-
-function Spinner() {
-  const [frame, setFrame] = useState(0);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setFrame((f) => (f + 1) % sym.spinnerFrames.length);
-    }, 80);
-    return () => clearInterval(interval);
-  }, []);
-  return <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>;
-}
 
 function StepLine({ done, active, text }: { done: boolean; active: boolean; text: string }) {
   return (
@@ -70,7 +63,6 @@ export function AddMemberScreen({
     if (trimmed.includes(".")) {
       setStatus("resolving");
       try {
-        const { resolveHandleToInbox } = await import("../../identity/resolver.js");
         const resolved = await resolveHandleToInbox(session.agent, trimmed);
         inboxId = resolved.inboxId;
         resolvedHandle = trimmed;
@@ -97,7 +89,6 @@ export function AddMemberScreen({
     // Cache profile if we resolved a handle (use real DID, not inboxId)
     if (resolvedHandle && resolvedDid) {
       try {
-        const { upsertProfile } = await import("../../storage/profiles.js");
         upsertProfile(session.db, {
           did: resolvedDid,
           inboxId,
@@ -111,7 +102,6 @@ export function AddMemberScreen({
     // Generate invite token (non-fatal if it fails — member is already added)
     setStatus("generating");
     try {
-      const { createInvite, encodeInvite } = await import("../../community/invites.js");
       const invite = await createInvite(
         session.privateKey,
         communityName,

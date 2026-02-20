@@ -16,6 +16,11 @@ import {
   getCommunity,
   archiveChannel as archiveChannelDb,
 } from "../storage/community-cache.js";
+import {
+  recoverAllCommunities as recoverAllCommunitiesImpl,
+  type RecoveryOptions,
+  type RecoveryResult,
+} from "./recovery.js";
 
 const metaCodec = new MetaMessageCodec();
 
@@ -258,32 +263,34 @@ export class CommunityManager {
 
     const state = replayMetaChannelWithSenders(taggedMessages);
 
-    // Update local cache
-    if (state.config) {
-      upsertCommunity(this.db, {
-        id: metaGroupId,
-        name: state.config.name,
-        description: state.config.description,
-        configJson: JSON.stringify(state.config),
-      });
-    }
+    // Update local cache atomically — prevents partial state on crash
+    this.db.transaction(() => {
+      if (state.config) {
+        upsertCommunity(this.db, {
+          id: metaGroupId,
+          name: state.config.name,
+          description: state.config.description,
+          configJson: JSON.stringify(state.config),
+        });
+      }
 
-    for (const [, ch] of state.channels) {
-      upsertChannel(this.db, {
-        id: ch.channelId,
-        communityId: metaGroupId,
-        xmtpGroupId: ch.xmtpGroupId,
-        name: ch.name,
-        description: ch.description,
-        category: ch.category,
-        permissions: ch.permissions,
-        archived: ch.archived,
-      });
-    }
+      for (const [, ch] of state.channels) {
+        upsertChannel(this.db, {
+          id: ch.channelId,
+          communityId: metaGroupId,
+          xmtpGroupId: ch.xmtpGroupId,
+          name: ch.name,
+          description: ch.description,
+          category: ch.category,
+          permissions: ch.permissions,
+          archived: ch.archived,
+        });
+      }
 
-    for (const [did, role] of state.roles) {
-      upsertRole(this.db, metaGroupId, did, role);
-    }
+      for (const [did, role] of state.roles) {
+        upsertRole(this.db, metaGroupId, did, role);
+      }
+    })();
 
     return state;
   }
@@ -330,6 +337,16 @@ export class CommunityManager {
     }
 
     return communities;
+  }
+
+  /**
+   * Recovers all communities after key restoration on a new device.
+   * Delegates to the standalone recovery module.
+   */
+  async recoverAllCommunities(
+    options?: RecoveryOptions,
+  ): Promise<RecoveryResult> {
+    return recoverAllCommunitiesImpl(this.xmtpClient, this, options);
   }
 
   private async getGroupById(groupId: string): Promise<Group> {

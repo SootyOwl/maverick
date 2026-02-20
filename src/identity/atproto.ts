@@ -12,7 +12,7 @@ export async function createBlueskySession(
 ): Promise<BlueskySession> {
   if (!config.bluesky.handle || !config.bluesky.password) {
     throw new Error(
-      "Missing Bluesky credentials. Set MAVERICK_BLUESKY_HANDLE and MAVERICK_BLUESKY_PASSWORD.",
+      "Missing Bluesky credentials. Run 'maverick login' first, or set MAVERICK_BLUESKY_HANDLE and MAVERICK_BLUESKY_PASSWORD environment variables.",
     );
   }
 
