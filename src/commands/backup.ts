@@ -1,10 +1,19 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { Command } from "commander";
 import { loadConfig } from "../config.js";
 import { getCachedPrivateKey } from "../identity/xmtp.js";
 import { encrypt, decrypt, IV_SIZE_V1, IV_SIZE_V2 } from "../utils/aes-gcm.js";
 import { createPrompt } from "./shared.js";
+
+/** Companion files the XMTP SDK creates alongside the main database. */
+function xmtpCompanionPaths(dbPath: string) {
+  return {
+    salt: dbPath + ".sqlcipher_salt",
+    wal: dbPath + "-wal",
+    shm: dbPath + "-shm",
+  };
+}
 
 export function registerBackupCommands(program: Command): void {
   // ─── backup ───────────────────────────────────────────────────────────────
@@ -42,8 +51,12 @@ export function registerBackupCommands(program: Command): void {
       }
       prompt.close();
 
-      // Read database files
+      // Read database files + companion salt file
       const xmtpDb = readFileSync(config.xmtp.dbPath);
+      const companions = xmtpCompanionPaths(config.xmtp.dbPath);
+      const saltFile = existsSync(companions.salt)
+        ? readFileSync(companions.salt)
+        : Buffer.alloc(0);
       const maverickDb = existsSync(config.sqlitePath)
         ? readFileSync(config.sqlitePath)
         : Buffer.alloc(0);
@@ -73,20 +86,30 @@ export function registerBackupCommands(program: Command): void {
         );
       }
 
-      // v3 Payload: [4B xmtpDbSize LE] [xmtpDb] [4B maverickDbSize LE] [maverickDb] [privateKey UTF-8]
+      // v4 Payload: [4B xmtpDbSize] [xmtpDb] [4B saltFileSize] [saltFile] [4B maverickDbSize] [maverickDb] [4B keySize] [privateKey]
       const xmtpSizeBuf = Buffer.alloc(4);
       xmtpSizeBuf.writeUInt32LE(xmtpDb.length, 0);
+      const saltSizeBuf = Buffer.alloc(4);
+      saltSizeBuf.writeUInt32LE(saltFile.length, 0);
       const mavSizeBuf = Buffer.alloc(4);
       mavSizeBuf.writeUInt32LE(maverickDb.length, 0);
-      const plaintext = Buffer.concat([xmtpSizeBuf, xmtpDb, mavSizeBuf, maverickDb, privateKeyBuf]);
+      const keySizeBuf = Buffer.alloc(4);
+      keySizeBuf.writeUInt32LE(privateKeyBuf.length, 0);
+      const plaintext = Buffer.concat([
+        xmtpSizeBuf, xmtpDb,
+        saltSizeBuf, saltFile,
+        mavSizeBuf, maverickDb,
+        keySizeBuf, privateKeyBuf,
+      ]);
 
       const { salt, iv, encrypted, authTag } = encrypt(plaintext, passphrase);
 
       // File format: [header JSON + newline] [salt 32B] [iv 12B] [authTag 16B] [encrypted]
       const header = JSON.stringify({
-        version: 3,
+        version: 4,
         createdAt: new Date().toISOString(),
         xmtpDbSize: xmtpDb.length,
+        saltFileSize: saltFile.length,
         maverickDbSize: maverickDb.length,
         privateKeyIncluded,
       });
@@ -100,6 +123,9 @@ export function registerBackupCommands(program: Command): void {
 
       const sizeMB = (output.length / (1024 * 1024)).toFixed(1);
       console.log(`\nBackup created: ${resolvedPath} (${sizeMB} MB)`);
+      if (saltFile.length > 0) {
+        console.log("Includes SQLCipher salt file.");
+      }
       if (privateKeyIncluded) {
         console.log("Includes XMTP private key — no recovery phrase needed to restore.");
       }
@@ -149,7 +175,7 @@ export function registerBackupCommands(program: Command): void {
       offset += headerLen;
       const header = JSON.parse(headerStr);
 
-      if (header.version !== 1 && header.version !== 2 && header.version !== 3) {
+      if (![1, 2, 3, 4].includes(header.version)) {
         console.error(`Unsupported backup version: ${header.version}`);
         process.exit(1);
       }
@@ -175,10 +201,31 @@ export function registerBackupCommands(program: Command): void {
 
       // Parse payload — format depends on version
       let xmtpDb: Buffer;
+      let restoredSaltFile: Buffer = Buffer.alloc(0);
       let maverickDb: Buffer;
       let restoredPrivateKey: string | null = null;
 
-      if (header.version >= 3) {
+      if (header.version >= 4) {
+        // v4: [4B xmtpDbSize] [xmtpDb] [4B saltFileSize] [saltFile] [4B maverickDbSize] [maverickDb] [4B keySize] [privateKey]
+        let pOff = 0;
+        const xmtpDbSize = plaintext.readUInt32LE(pOff);
+        pOff += 4;
+        xmtpDb = plaintext.subarray(pOff, pOff + xmtpDbSize);
+        pOff += xmtpDbSize;
+        const saltFileSize = plaintext.readUInt32LE(pOff);
+        pOff += 4;
+        restoredSaltFile = plaintext.subarray(pOff, pOff + saltFileSize);
+        pOff += saltFileSize;
+        const maverickDbSize = plaintext.readUInt32LE(pOff);
+        pOff += 4;
+        maverickDb = plaintext.subarray(pOff, pOff + maverickDbSize);
+        pOff += maverickDbSize;
+        const keySize = plaintext.readUInt32LE(pOff);
+        pOff += 4;
+        if (keySize > 0) {
+          restoredPrivateKey = plaintext.subarray(pOff, pOff + keySize).toString("utf-8");
+        }
+      } else if (header.version === 3) {
         // v3: [4B xmtpDbSize] [xmtpDb] [4B maverickDbSize] [maverickDb] [privateKey UTF-8]
         let pOff = 0;
         const xmtpDbSize = plaintext.readUInt32LE(pOff);
@@ -200,9 +247,25 @@ export function registerBackupCommands(program: Command): void {
         maverickDb = plaintext.subarray(4 + xmtpDbSize);
       }
 
+      // Clean up stale SQLite companion files before writing restored databases.
+      // WAL/SHM files from a previous session (possibly encrypted with a different
+      // key) will cause "PRAGMA key or salt has incorrect value" errors.
+      const companions = xmtpCompanionPaths(config.xmtp.dbPath);
+      for (const staleFile of [companions.wal, companions.shm, companions.salt]) {
+        if (existsSync(staleFile)) {
+          unlinkSync(staleFile);
+        }
+      }
+
       // Write databases
       writeFileSync(config.xmtp.dbPath, xmtpDb);
       chmodSync(config.xmtp.dbPath, 0o600);
+
+      // Write salt file if present in backup
+      if (restoredSaltFile.length > 0) {
+        writeFileSync(companions.salt, restoredSaltFile);
+        chmodSync(companions.salt, 0o600);
+      }
 
       if (maverickDb.length > 0) {
         writeFileSync(config.sqlitePath, maverickDb);
@@ -230,8 +293,20 @@ export function registerBackupCommands(program: Command): void {
         );
       }
 
+      if (header.version < 4 && restoredSaltFile.length === 0) {
+        console.warn(
+          "\nWarning: This backup (v" + header.version + ") does not include the SQLCipher salt file.",
+        );
+        console.warn(
+          "If the XMTP database fails to open, create a fresh backup with `maverick backup`.",
+        );
+      }
+
       console.log(`\nRestore complete!`);
       console.log(`  XMTP database: ${config.xmtp.dbPath} (${(xmtpDb.length / 1024).toFixed(0)} KB)`);
+      if (restoredSaltFile.length > 0) {
+        console.log(`  SQLCipher salt: ${companions.salt} (${restoredSaltFile.length} B)`);
+      }
       if (maverickDb.length > 0) {
         console.log(`  Maverick database: ${config.sqlitePath} (${(maverickDb.length / 1024).toFixed(0)} KB)`);
       }

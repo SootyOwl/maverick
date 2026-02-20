@@ -5,6 +5,7 @@ import {
   writeFileSync,
   rmSync,
   existsSync,
+  unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -103,6 +104,53 @@ function buildV3Backup(
   return Buffer.concat([headerLenBuf, headerBuf, salt, iv, authTag, encrypted]);
 }
 
+/** Build a v4 backup (includes salt file + length-prefixed key). */
+function buildV4Backup(
+  xmtpDb: Buffer,
+  saltFile: Buffer,
+  maverickDb: Buffer,
+  privateKey: string,
+  passphrase: string,
+): Buffer {
+  const salt = randomBytes(32);
+  const iv = randomBytes(12);
+  const key = scryptSync(passphrase, salt, 32, SCRYPT_OPTS);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+
+  const xmtpSizeBuf = Buffer.alloc(4);
+  xmtpSizeBuf.writeUInt32LE(xmtpDb.length, 0);
+  const saltSizeBuf = Buffer.alloc(4);
+  saltSizeBuf.writeUInt32LE(saltFile.length, 0);
+  const mavSizeBuf = Buffer.alloc(4);
+  mavSizeBuf.writeUInt32LE(maverickDb.length, 0);
+  const keyBuf = Buffer.from(privateKey, "utf-8");
+  const keySizeBuf = Buffer.alloc(4);
+  keySizeBuf.writeUInt32LE(keyBuf.length, 0);
+  const plaintext = Buffer.concat([
+    xmtpSizeBuf, xmtpDb,
+    saltSizeBuf, saltFile,
+    mavSizeBuf, maverickDb,
+    keySizeBuf, keyBuf,
+  ]);
+
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const authTag = cipher.getAuthTag();
+
+  const header = JSON.stringify({
+    version: 4,
+    createdAt: new Date().toISOString(),
+    xmtpDbSize: xmtpDb.length,
+    saltFileSize: saltFile.length,
+    maverickDbSize: maverickDb.length,
+    privateKeyIncluded: true,
+  });
+  const headerBuf = Buffer.from(header + "\n", "utf-8");
+  const headerLenBuf = Buffer.alloc(4);
+  headerLenBuf.writeUInt32LE(headerBuf.length, 0);
+
+  return Buffer.concat([headerLenBuf, headerBuf, salt, iv, authTag, encrypted]);
+}
+
 /** Decrypt a backup and parse the payload according to version. */
 function decryptBackup(
   data: Buffer,
@@ -110,6 +158,7 @@ function decryptBackup(
 ): {
   header: Record<string, unknown>;
   xmtpDb: Buffer;
+  saltFile: Buffer;
   maverickDb: Buffer;
   privateKey: string | null;
 } {
@@ -135,8 +184,27 @@ function decryptBackup(
   decipher.setAuthTag(authTag);
   const plaintext = Buffer.concat([decipher.update(encrypted), decipher.final()]);
 
-  if (header.version >= 3) {
-    // v3 format: [4B xmtpDbSize] [xmtpDb] [4B maverickDbSize] [maverickDb] [privateKey]
+  if (header.version >= 4) {
+    // v4: [4B xmtpDbSize] [xmtpDb] [4B saltFileSize] [saltFile] [4B maverickDbSize] [maverickDb] [4B keySize] [privateKey]
+    let pOff = 0;
+    const xmtpDbSize = plaintext.readUInt32LE(pOff);
+    pOff += 4;
+    const xmtpDb = plaintext.subarray(pOff, pOff + xmtpDbSize);
+    pOff += xmtpDbSize;
+    const saltFileSize = plaintext.readUInt32LE(pOff);
+    pOff += 4;
+    const saltFile = plaintext.subarray(pOff, pOff + saltFileSize);
+    pOff += saltFileSize;
+    const maverickDbSize = plaintext.readUInt32LE(pOff);
+    pOff += 4;
+    const maverickDb = plaintext.subarray(pOff, pOff + maverickDbSize);
+    pOff += maverickDbSize;
+    const keySize = plaintext.readUInt32LE(pOff);
+    pOff += 4;
+    const privateKey = keySize > 0 ? plaintext.subarray(pOff, pOff + keySize).toString("utf-8") : null;
+    return { header, xmtpDb, saltFile, maverickDb, privateKey };
+  } else if (header.version === 3) {
+    // v3: [4B xmtpDbSize] [xmtpDb] [4B maverickDbSize] [maverickDb] [privateKey UTF-8]
     let pOff = 0;
     const xmtpDbSize = plaintext.readUInt32LE(pOff);
     pOff += 4;
@@ -147,13 +215,13 @@ function decryptBackup(
     const maverickDb = plaintext.subarray(pOff, pOff + maverickDbSize);
     pOff += maverickDbSize;
     const privateKey = plaintext.subarray(pOff).toString("utf-8");
-    return { header, xmtpDb, maverickDb, privateKey: privateKey || null };
+    return { header, xmtpDb, saltFile: Buffer.alloc(0), maverickDb, privateKey: privateKey || null };
   } else {
-    // v1/v2 format: [4B xmtpDbSize] [xmtpDb] [maverickDb]
+    // v1/v2: [4B xmtpDbSize] [xmtpDb] [maverickDb (remainder)]
     const xmtpDbSize = plaintext.readUInt32LE(0);
     const xmtpDb = plaintext.subarray(4, 4 + xmtpDbSize);
     const maverickDb = plaintext.subarray(4 + xmtpDbSize);
-    return { header, xmtpDb, maverickDb, privateKey: null };
+    return { header, xmtpDb, saltFile: Buffer.alloc(0), maverickDb, privateKey: null };
   }
 }
 
@@ -200,6 +268,39 @@ describe("backup payload serialization", () => {
     const backup = buildV3Backup(xmtpDb, maverickDb, privateKey, passphrase);
     expect(() => decryptBackup(backup, "wrong-passphrase")).toThrow();
   });
+
+  it("v4 backup round-trips all four components including salt file", () => {
+    const saltFile = Buffer.from("a]9f#kP!mQ2x&vB7wR4nL0cJ8eH6dT3s");
+    const backup = buildV4Backup(xmtpDb, saltFile, maverickDb, privateKey, passphrase);
+    const result = decryptBackup(backup, passphrase);
+
+    expect(Buffer.from(result.xmtpDb).equals(xmtpDb)).toBe(true);
+    expect(Buffer.from(result.saltFile).equals(saltFile)).toBe(true);
+    expect(Buffer.from(result.maverickDb).equals(maverickDb)).toBe(true);
+    expect(result.privateKey).toBe(privateKey);
+    expect(result.header.version).toBe(4);
+    expect(result.header.saltFileSize).toBe(32);
+    expect(result.header.privateKeyIncluded).toBe(true);
+  });
+
+  it("v4 backup with empty salt file (no .sqlcipher_salt on disk)", () => {
+    const backup = buildV4Backup(xmtpDb, Buffer.alloc(0), maverickDb, privateKey, passphrase);
+    const result = decryptBackup(backup, passphrase);
+
+    expect(Buffer.from(result.xmtpDb).equals(xmtpDb)).toBe(true);
+    expect(result.saltFile.length).toBe(0);
+    expect(Buffer.from(result.maverickDb).equals(maverickDb)).toBe(true);
+    expect(result.privateKey).toBe(privateKey);
+  });
+
+  it("v3 backup decrypts with empty salt file (backward compat)", () => {
+    const backup = buildV3Backup(xmtpDb, maverickDb, privateKey, passphrase);
+    const result = decryptBackup(backup, passphrase);
+
+    expect(result.saltFile.length).toBe(0);
+    expect(result.privateKey).toBe(privateKey);
+    expect(result.header.version).toBe(3);
+  });
 });
 
 describe("backup/restore round-trip with key storage", () => {
@@ -244,6 +345,65 @@ describe("backup/restore round-trip with key storage", () => {
     // Databases still extracted correctly
     expect(Buffer.from(result.xmtpDb).toString()).toBe("xmtp-data");
     expect(Buffer.from(result.maverickDb).toString()).toBe("maverick-data");
+  });
+
+  it("v4 restore writes salt file alongside database", async () => {
+    const xmtpDb = Buffer.from("xmtp-data");
+    const saltFile = Buffer.from("a]9f#kP!mQ2x&vB7wR4nL0cJ8eH6dT3s");
+    const maverickDb = Buffer.from("maverick-data");
+
+    const backup = buildV4Backup(xmtpDb, saltFile, maverickDb, privateKey, passphrase);
+    const result = decryptBackup(backup, passphrase);
+
+    // Simulate restore: write DB + salt file to temp dir
+    const dbDir = join(TEST_DIR, "db");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = join(dbDir, "xmtp.db3");
+    const saltPath = dbPath + ".sqlcipher_salt";
+
+    writeFileSync(dbPath, result.xmtpDb);
+    if (result.saltFile.length > 0) {
+      writeFileSync(saltPath, result.saltFile);
+    }
+
+    // Verify both files written correctly
+    expect(readFileSync(dbPath).equals(xmtpDb)).toBe(true);
+    expect(readFileSync(saltPath).equals(saltFile)).toBe(true);
+  });
+
+  it("restore cleans up stale WAL/SHM files", async () => {
+    // Simulate: stale companion files exist from a previous session
+    const dbDir = join(TEST_DIR, "db");
+    mkdirSync(dbDir, { recursive: true });
+    const dbPath = join(dbDir, "xmtp.db3");
+    const walPath = dbPath + "-wal";
+    const shmPath = dbPath + "-shm";
+    const saltPath = dbPath + ".sqlcipher_salt";
+
+    // Create stale files
+    writeFileSync(dbPath, "old-db");
+    writeFileSync(walPath, "stale-wal-data");
+    writeFileSync(shmPath, "stale-shm-data");
+    writeFileSync(saltPath, "old-salt-from-different-key");
+
+    expect(existsSync(walPath)).toBe(true);
+    expect(existsSync(shmPath)).toBe(true);
+
+    // Simulate restore: clean up stale files, then write new ones
+    for (const staleFile of [walPath, shmPath, saltPath]) {
+      if (existsSync(staleFile)) unlinkSync(staleFile);
+    }
+
+    const newDb = Buffer.from("restored-xmtp-db");
+    const newSalt = Buffer.from("correct-salt-from-backup!!!!!!!!");
+    writeFileSync(dbPath, newDb);
+    writeFileSync(saltPath, newSalt);
+
+    // WAL/SHM gone, new DB + salt in place
+    expect(existsSync(walPath)).toBe(false);
+    expect(existsSync(shmPath)).toBe(false);
+    expect(readFileSync(dbPath).equals(newDb)).toBe(true);
+    expect(readFileSync(saltPath).equals(newSalt)).toBe(true);
   });
 
   it("private key survives full backup → clear → restore cycle", async () => {
