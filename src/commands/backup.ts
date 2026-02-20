@@ -22,7 +22,8 @@ export function registerBackupCommands(program: Command): void {
     .command("backup")
     .description("Create an encrypted backup of XMTP and Maverick databases")
     .argument("[path]", "Output file path", "maverick-backup.enc")
-    .action(async (outputPath: string) => {
+    .option("--passphrase <passphrase>", "Backup passphrase (non-interactive)")
+    .action(async (outputPath: string, opts: { passphrase?: string }) => {
       const config = loadConfig();
 
       // Check that databases exist
@@ -32,24 +33,34 @@ export function registerBackupCommands(program: Command): void {
         process.exit(1);
       }
 
-      const prompt = createPrompt();
+      let passphrase: string;
+      if (opts.passphrase) {
+        passphrase = opts.passphrase;
+      } else {
+        const prompt = createPrompt();
 
-      console.log("Create an encrypted backup of your Maverick data.");
-      console.log("You'll need the passphrase to restore this backup.\n");
+        console.log("Create an encrypted backup of your Maverick data.");
+        console.log("You'll need the passphrase to restore this backup.\n");
 
-      const passphrase = await prompt.ask("Backup passphrase: ");
+        passphrase = await prompt.ask("Backup passphrase: ");
+        if (passphrase.length < 8) {
+          console.error("Passphrase must be at least 8 characters.");
+          prompt.close();
+          process.exit(1);
+        }
+        const confirm = await prompt.ask("Confirm passphrase: ");
+        if (passphrase !== confirm) {
+          console.error("Passphrases do not match.");
+          prompt.close();
+          process.exit(1);
+        }
+        prompt.close();
+      }
+
       if (passphrase.length < 8) {
         console.error("Passphrase must be at least 8 characters.");
-        prompt.close();
         process.exit(1);
       }
-      const confirm = await prompt.ask("Confirm passphrase: ");
-      if (passphrase !== confirm) {
-        console.error("Passphrases do not match.");
-        prompt.close();
-        process.exit(1);
-      }
-      prompt.close();
 
       // Read database files + companion salt file
       const xmtpDb = readFileSync(config.xmtp.dbPath);
@@ -138,7 +149,9 @@ export function registerBackupCommands(program: Command): void {
     .command("restore")
     .description("Restore Maverick databases from an encrypted backup")
     .argument("<path>", "Path to backup file")
-    .action(async (inputPath: string) => {
+    .option("--passphrase <passphrase>", "Backup passphrase (non-interactive)")
+    .option("-y, --yes", "Skip confirmation prompt")
+    .action(async (inputPath: string, opts: { passphrase?: string; yes?: boolean }) => {
       const config = loadConfig();
       mkdirSync(config.dataDir, { recursive: true });
 
@@ -149,7 +162,7 @@ export function registerBackupCommands(program: Command): void {
       }
 
       // Warn if databases already exist
-      if (existsSync(config.xmtp.dbPath) || existsSync(config.sqlitePath)) {
+      if (!opts.yes && (existsSync(config.xmtp.dbPath) || existsSync(config.sqlitePath))) {
         const confirmPrompt = createPrompt();
         const answer = await confirmPrompt.ask(
           "Existing databases found. Restoring will overwrite them. Continue? [y/N] ",
@@ -161,9 +174,14 @@ export function registerBackupCommands(program: Command): void {
         }
       }
 
-      const prompt = createPrompt();
-      const passphrase = await prompt.ask("Backup passphrase: ");
-      prompt.close();
+      let passphrase: string;
+      if (opts.passphrase) {
+        passphrase = opts.passphrase;
+      } else {
+        const prompt = createPrompt();
+        passphrase = await prompt.ask("Backup passphrase: ");
+        prompt.close();
+      }
 
       const data = readFileSync(resolvedPath);
       let offset = 0;

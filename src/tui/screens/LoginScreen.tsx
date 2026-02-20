@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Box, Text, useInput, useApp } from "ink";
-import { theme, sym } from "../theme.js";
+import { Box, Text, useApp, useInput } from "ink";
+import React, { useCallback, useEffect, useState } from "react";
+import type { Config } from "../../config.js";
 import { TextInput } from "../components/TextInput.js";
 import type { AuthSession } from "../hooks/useAppState.js";
-import type { Config } from "../../config.js";
+import { sym, theme } from "../theme.js";
 
 interface LoginScreenProps {
   initialConfig: Config;
@@ -11,12 +11,12 @@ interface LoginScreenProps {
 }
 
 type LoginStatus =
-  | "idle"           // handle/password form
+  | "idle" // handle/password form
   | "authenticating" // progress steps
-  | "phraseDisplay"  // show generated phrase (new user)
-  | "phraseConfirm"  // type phrase back to confirm
-  | "phraseEntry"    // enter recovery phrase (returning user)
-  | "recovering"     // running recovery steps
+  | "phraseDisplay" // show generated phrase (new user)
+  | "phraseConfirm" // type phrase back to confirm
+  | "phraseEntry" // enter recovery phrase (returning user)
+  | "recovering" // running recovery steps
   | "success"
   | "error";
 
@@ -39,9 +39,7 @@ function StepSpinner() {
     return () => clearInterval(interval);
   }, []);
 
-  return (
-    <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>
-  );
+  return <Text color={theme.accent}>{sym.spinnerFrames[frame]}</Text>;
 }
 
 /** Intermediate state saved after Bluesky auth, before phrase flow */
@@ -71,171 +69,191 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
 
   // ── Phrase flow state ────────────────────────────────────────────────
   const [recoveryPhrase, setRecoveryPhrase] = useState(""); // generated phrase (new user)
-  const [phraseInput, setPhraseInput] = useState("");        // user's typed phrase
+  const [phraseInput, setPhraseInput] = useState(""); // user's typed phrase
   const [phraseError, setPhraseError] = useState<string | null>(null);
   const [existingInboxId, setExistingInboxId] = useState<string | null>(null);
   // Pending key held in memory only — committed to storage after phrase confirm
-  const [pendingPrivateKey, setPendingPrivateKey] = useState<`0x${string}` | null>(null);
+  const [pendingPrivateKey, setPendingPrivateKey] = useState<
+    `0x${string}` | null
+  >(null);
 
   // ── Intermediate state (saved between Bluesky auth and phrase flow) ──
   const [bskyResult, setBskyResult] = useState<BlueskyResult | null>(null);
 
-  const autoLogin = !!(initialConfig.bluesky.handle && initialConfig.bluesky.password);
-
-  // ── Phase 1: Bluesky auth + key check ────────────────────────────────
-  const doLogin = useCallback(async (h: string, p: string) => {
-    if (!h || !p) {
-      setError("Handle and password are required");
-      return;
-    }
-
-    setStatus("authenticating");
-    setError(null);
-    setStep(0);
-    setTotalSteps(4);
-
-    try {
-      // Step 0: Authenticate with Bluesky
-      const { createBlueskySession } = await import("../../identity/atproto.js");
-      const config: Config = {
-        ...initialConfig,
-        bluesky: { ...initialConfig.bluesky, handle: h, password: p },
-      };
-      const bsky = await createBlueskySession(config);
-
-      setStep(1);
-
-      // Step 1: Check for cached key
-      const { getCachedPrivateKey, migrateLegacyIdentity, createNewIdentity } =
-        await import("../../identity/xmtp.js");
-
-      // 1a: Try cached key (keychain / plaintext file)
-      let privateKey = await getCachedPrivateKey(bsky.handle);
-      if (privateKey) {
-        // Have a cached key -- skip phrase flow entirely
-        await finishLogin(config, bsky, privateKey, p, false);
-        return;
-      }
-
-      // 1b: Try legacy key migration (old passphrase-encrypted format)
-      privateKey = await migrateLegacyIdentity(bsky.handle, p);
-      if (privateKey) {
-        await finishLogin(config, bsky, privateKey, p, false);
-        return;
-      }
-
-      // 1c: Check PDS for existing community.maverick.inbox record
-      const { getMaverickRecord } = await import("../../identity/bridge.js");
-      const record = await getMaverickRecord(bsky.agent, bsky.did);
-
-      // Save intermediate state for phrase flow continuation
-      const result: BlueskyResult = {
-        agent: bsky.agent,
-        did: bsky.did,
-        handle: bsky.handle,
-        config,
-        password: p,
-      };
-      setBskyResult(result);
-
-      if (record) {
-        // Returning user: record exists on PDS, need recovery phrase
-        setExistingInboxId(record.inboxId);
-        setStatus("phraseEntry");
-      } else {
-        // New user: generate a recovery phrase and display it.
-        // The key is held in memory only — not persisted until phrase confirmed.
-        const identity = await createNewIdentity(bsky.handle, bsky.did);
-        setRecoveryPhrase(identity.recoveryPhrase);
-        setPendingPrivateKey(identity.privateKey);
-        setStatus("phraseDisplay");
-      }
-    } catch (err) {
-      setStatus("error");
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [initialConfig, onLogin]); // eslint-disable-line react-hooks/exhaustive-deps
+  const autoLogin = !!(
+    initialConfig.bluesky.handle && initialConfig.bluesky.password
+  );
 
   // ── Phase 2: Finish login (create XMTP client, publish bridge, etc.) ─
-  const finishLogin = useCallback(async (
-    config: Config,
-    bsky: { agent: import("@atproto/api").AtpAgent; did: string; handle: string },
-    privateKey: `0x${string}`,
-    pwd: string,
-    isRecovery: boolean,
-  ) => {
-    try {
-      if (isRecovery) {
-        setStatus("recovering");
-        setTotalSteps(5);
-      }
-
-      // Step 1: Create XMTP client
-      setStep(1);
-      const { createXmtpClient } = await import("../../identity/xmtp.js");
-      const xmtpClient = await createXmtpClient(config, privateKey);
-
-      // Step 2: Publish identity bridge
-      setStep(2);
-      const { publishMaverickRecord } = await import("../../identity/bridge.js");
-      await publishMaverickRecord(bsky.agent, xmtpClient);
-
-      // Step 3: Set up database
-      setStep(3);
-      const { createDatabase } = await import("../../storage/db.js");
-      const db = createDatabase(config.sqlitePath);
-
-      const { CommunityManager } = await import("../../community/manager.js");
-      const manager = new CommunityManager(xmtpClient, db);
-
-      // Cache profile
-      const { upsertProfile } = await import("../../storage/profiles.js");
-      upsertProfile(db, {
-        did: bsky.did,
-        inboxId: xmtpClient.inboxId,
-        handle: bsky.handle,
-      });
-
-      // Step 4: Recovery (only during recovery flow)
-      if (isRecovery) {
-        setStep(4);
-        try {
-          await manager.recoverAllCommunities();
-        } catch {
-          // Non-fatal: community recovery can fail gracefully
-        }
-      }
-
-      // Persist session credentials
+  const finishLogin = useCallback(
+    async (
+      config: Config,
+      bsky: {
+        agent: import("@atproto/api").AtpAgent;
+        did: string;
+        handle: string;
+      },
+      privateKey: `0x${string}`,
+      pwd: string,
+      isRecovery: boolean,
+    ) => {
       try {
-        const { saveSession } = await import("../../storage/session.js");
-        saveSession(bsky.handle, pwd);
-      } catch {
-        // Non-fatal: keychain may be unavailable
+        if (isRecovery) {
+          setStatus("recovering");
+          setTotalSteps(5);
+        }
+
+        // Step 1: Create XMTP client
+        setStep(1);
+        const { createXmtpClient } = await import("../../identity/xmtp.js");
+        const xmtpClient = await createXmtpClient(config, privateKey);
+
+        // Step 2: Publish identity bridge
+        setStep(2);
+        const { publishMaverickRecord } =
+          await import("../../identity/bridge.js");
+        await publishMaverickRecord(bsky.agent, xmtpClient);
+
+        // Step 3: Set up database
+        setStep(3);
+        const { createDatabase } = await import("../../storage/db.js");
+        const db = createDatabase(config.sqlitePath);
+
+        const { CommunityManager } = await import("../../community/manager.js");
+        const manager = new CommunityManager(xmtpClient, db);
+
+        // Cache profile
+        const { upsertProfile } = await import("../../storage/profiles.js");
+        upsertProfile(db, {
+          did: bsky.did,
+          inboxId: xmtpClient.inboxId,
+          handle: bsky.handle,
+        });
+
+        // Step 4: Recovery (only during recovery flow)
+        if (isRecovery) {
+          setStep(4);
+          try {
+            await manager.recoverAllCommunities();
+          } catch {
+            // Non-fatal: community recovery can fail gracefully
+          }
+        }
+
+        // Persist session credentials
+        try {
+          const { saveSession } = await import("../../storage/session.js");
+          saveSession(bsky.handle, pwd);
+        } catch {
+          // Non-fatal: keychain may be unavailable
+        }
+
+        setStatus("success");
+
+        onLogin({
+          xmtpClient,
+          db,
+          handle: bsky.handle,
+          did: bsky.did,
+          agent: bsky.agent,
+          privateKey,
+          manager,
+        });
+      } catch (err) {
+        setStatus("error");
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [onLogin],
+  );
+
+  // ── Phase 1: Bluesky auth + key check ────────────────────────────────
+  const doLogin = useCallback(
+    async (h: string, p: string) => {
+      if (!h || !p) {
+        setError("Handle and password are required");
+        return;
       }
 
-      setStatus("success");
+      setStatus("authenticating");
+      setError(null);
+      setStep(0);
+      setTotalSteps(4);
 
-      onLogin({
-        xmtpClient,
-        db,
-        handle: bsky.handle,
-        did: bsky.did,
-        agent: bsky.agent,
-        privateKey,
-        manager,
-      });
-    } catch (err) {
-      setStatus("error");
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [onLogin]);
+      try {
+        // Step 0: Authenticate with Bluesky
+        const { createBlueskySession } =
+          await import("../../identity/atproto.js");
+        const config: Config = {
+          ...initialConfig,
+          bluesky: { ...initialConfig.bluesky, handle: h, password: p },
+        };
+        const bsky = await createBlueskySession(config);
+
+        setStep(1);
+
+        // Step 1: Check for cached key
+        const {
+          getCachedPrivateKey,
+          migrateLegacyIdentity,
+          createNewIdentity,
+        } = await import("../../identity/xmtp.js");
+
+        // 1a: Try cached key (keychain / plaintext file)
+        let privateKey = await getCachedPrivateKey(bsky.handle);
+        if (privateKey) {
+          // Have a cached key -- skip phrase flow entirely
+          await finishLogin(config, bsky, privateKey, p, false);
+          return;
+        }
+
+        // 1b: Try legacy key migration (old passphrase-encrypted format)
+        privateKey = await migrateLegacyIdentity(bsky.handle, p);
+        if (privateKey) {
+          await finishLogin(config, bsky, privateKey, p, false);
+          return;
+        }
+
+        // 1c: Check PDS for existing community.maverick.inbox record
+        const { getMaverickRecord } = await import("../../identity/bridge.js");
+        const record = await getMaverickRecord(bsky.agent, bsky.did);
+
+        // Save intermediate state for phrase flow continuation
+        const result: BlueskyResult = {
+          agent: bsky.agent,
+          did: bsky.did,
+          handle: bsky.handle,
+          config,
+          password: p,
+        };
+        setBskyResult(result);
+
+        if (record) {
+          // Returning user: record exists on PDS, need recovery phrase
+          setExistingInboxId(record.inboxId);
+          setStatus("phraseEntry");
+        } else {
+          // New user: generate a recovery phrase and display it.
+          // The key is held in memory only — not persisted until phrase confirmed.
+          const identity = await createNewIdentity(bsky.handle, bsky.did);
+          setRecoveryPhrase(identity.recoveryPhrase);
+          setPendingPrivateKey(identity.privateKey);
+          setStatus("phraseDisplay");
+        }
+      } catch (err) {
+        setStatus("error");
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [initialConfig, onLogin, finishLogin],
+  );
 
   // ── Phrase confirmation handler (new user) ───────────────────────────
   const handlePhraseConfirm = useCallback(async () => {
     if (!bskyResult) return;
 
-    const { normalizePhrase } = await import("../../identity/recovery-phrase.js");
+    const { normalizePhrase } =
+      await import("../../identity/recovery-phrase.js");
     const normalized = normalizePhrase(phraseInput);
     const expected = normalizePhrase(recoveryPhrase);
 
@@ -272,7 +290,8 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
   const handlePhraseEntry = useCallback(async () => {
     if (!bskyResult) return;
 
-    const { validateRecoveryPhrase } = await import("../../identity/recovery-phrase.js");
+    const { validateRecoveryPhrase } =
+      await import("../../identity/recovery-phrase.js");
 
     if (!validateRecoveryPhrase(phraseInput)) {
       setPhraseError(
@@ -287,7 +306,8 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
     setStep(1);
 
     try {
-      const { recoverIdentity, createXmtpClient, commitIdentity } = await import("../../identity/xmtp.js");
+      const { recoverIdentity, createXmtpClient, commitIdentity } =
+        await import("../../identity/xmtp.js");
 
       // Derive key from phrase + DID (does NOT persist — key is unverified)
       const privateKey = await recoverIdentity(
@@ -304,7 +324,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         setStatus("phraseEntry");
         setPhraseError(
           "Recovery phrase does not match the identity on record. " +
-          "The derived inbox ID differs from your published record.",
+            "The derived inbox ID differs from your published record.",
         );
         setPhraseInput("");
         return;
@@ -314,7 +334,13 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
       await commitIdentity(bskyResult.handle, privateKey);
 
       // Delegate remaining steps (publish bridge, DB, recovery, session) to finishLogin
-      await finishLogin(bskyResult.config, bskyResult, privateKey, bskyResult.password, true);
+      await finishLogin(
+        bskyResult.config,
+        bskyResult,
+        privateKey,
+        bskyResult.password,
+        true,
+      );
     } catch (err) {
       // Clean up any potentially poisoned cached key from prior attempts
       try {
@@ -340,7 +366,11 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
   useInput((input, key) => {
     if (key.escape) {
       // In phrase states, Esc goes back to idle (cancel)
-      if (status === "phraseDisplay" || status === "phraseConfirm" || status === "phraseEntry") {
+      if (
+        status === "phraseDisplay" ||
+        status === "phraseConfirm" ||
+        status === "phraseEntry"
+      ) {
         setStatus("idle");
         setPhraseInput("");
         setPhraseError(null);
@@ -354,7 +384,12 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
       return;
     }
 
-    if (status === "authenticating" || status === "recovering" || status === "success") return;
+    if (
+      status === "authenticating" ||
+      status === "recovering" ||
+      status === "success"
+    )
+      return;
 
     // ── phraseDisplay: wait for Enter ──────────────────────────────
     if (status === "phraseDisplay") {
@@ -410,14 +445,12 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
             ) : (
               <Text color={theme.dim}>{sym.dotEmpty}</Text>
             )}
-            <Text color={i <= step ? theme.text : theme.dim}>
-              {s}
-            </Text>
+            <Text color={i <= step ? theme.text : theme.dim}>{s}</Text>
           </Box>
         ))}
         <Box marginTop={1}>
           <Text color={theme.dim}>
-            Esc{" "}<Text color={theme.muted}>cancel</Text>
+            Esc <Text color={theme.muted}>cancel</Text>
           </Text>
         </Box>
       </Box>
@@ -452,9 +485,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
             You need this phrase to recover your
           </Text>
         </Box>
-        <Text color={theme.textSecondary}>
-          identity on a new device.
-        </Text>
+        <Text color={theme.textSecondary}>identity on a new device.</Text>
       </Box>
 
       <Box marginTop={1} gap={2}>
@@ -471,10 +502,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
   );
 
   // ── Render: shared phrase input (confirm / recovery entry) ───────────
-  const renderPhraseInput = (
-    header: React.ReactNode,
-    actionLabel: string,
-  ) => (
+  const renderPhraseInput = (header: React.ReactNode, actionLabel: string) => (
     <Box flexDirection="column" paddingX={1}>
       <Box marginBottom={1} flexDirection="column">
         {header}
@@ -518,18 +546,14 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
 
   const renderPhraseConfirm = () =>
     renderPhraseInput(
-      <Text color={theme.textSecondary}>
-        Confirm your recovery phrase:
-      </Text>,
+      <Text color={theme.textSecondary}>Confirm your recovery phrase:</Text>,
       "confirm",
     );
 
   const renderPhraseEntry = () =>
     renderPhraseInput(
       <>
-        <Text color={theme.yellow}>
-          Existing Maverick identity found.
-        </Text>
+        <Text color={theme.yellow}>Existing Maverick identity found.</Text>
         <Text color={theme.textSecondary}>
           Enter your recovery phrase to restore:
         </Text>
@@ -606,7 +630,8 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
 
   // ── Content selector ─────────────────────────────────────────────────
   function renderContent() {
-    if (status === "authenticating" || status === "recovering") return renderSteps();
+    if (status === "authenticating" || status === "recovering")
+      return renderSteps();
     if (status === "phraseDisplay") return renderPhraseDisplay();
     if (status === "phraseConfirm") return renderPhraseConfirm();
     if (status === "phraseEntry") return renderPhraseEntry();
@@ -628,9 +653,7 @@ export function LoginScreen({ initialConfig, onLogin }: LoginScreenProps) {
         <Text color={theme.accentBright} bold>
           maverick
         </Text>
-        <Text color={theme.dim}>
-          {" "}{sym.separator} private community chat
-        </Text>
+        <Text color={theme.dim}> {sym.separator} private community chat</Text>
       </Box>
 
       {renderContent()}
