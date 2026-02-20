@@ -5,15 +5,15 @@ import { KeychainStrategy } from "./keychain-strategy.js";
 
 // Session storage: Bluesky handle + app password.
 //
-// Keyring backend: two separate entries ("bsky-handle", "bsky-password").
+// Keyring backend: two separate entries ("handle", "password").
 // File fallback: a single JSON file at ~/.maverick/session.json (0600).
 //
 // Uses KeychainStrategy for keyring probe/cache/warn logic, but manages
 // the composite JSON file itself (strategy's per-account file ops don't
 // apply here since both values share one file).
 
-const HANDLE_ACCOUNT = "bsky-handle";
-const PASSWORD_ACCOUNT = "bsky-password";
+const HANDLE_ACCOUNT = "handle";
+const PASSWORD_ACCOUNT = "password";
 
 function sessionFilePath(): string {
   return join(
