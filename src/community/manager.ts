@@ -258,32 +258,34 @@ export class CommunityManager {
 
     const state = replayMetaChannelWithSenders(taggedMessages);
 
-    // Update local cache
-    if (state.config) {
-      upsertCommunity(this.db, {
-        id: metaGroupId,
-        name: state.config.name,
-        description: state.config.description,
-        configJson: JSON.stringify(state.config),
-      });
-    }
+    // Update local cache atomically — prevents partial state on crash
+    this.db.transaction(() => {
+      if (state.config) {
+        upsertCommunity(this.db, {
+          id: metaGroupId,
+          name: state.config.name,
+          description: state.config.description,
+          configJson: JSON.stringify(state.config),
+        });
+      }
 
-    for (const [, ch] of state.channels) {
-      upsertChannel(this.db, {
-        id: ch.channelId,
-        communityId: metaGroupId,
-        xmtpGroupId: ch.xmtpGroupId,
-        name: ch.name,
-        description: ch.description,
-        category: ch.category,
-        permissions: ch.permissions,
-        archived: ch.archived,
-      });
-    }
+      for (const [, ch] of state.channels) {
+        upsertChannel(this.db, {
+          id: ch.channelId,
+          communityId: metaGroupId,
+          xmtpGroupId: ch.xmtpGroupId,
+          name: ch.name,
+          description: ch.description,
+          category: ch.category,
+          permissions: ch.permissions,
+          archived: ch.archived,
+        });
+      }
 
-    for (const [did, role] of state.roles) {
-      upsertRole(this.db, metaGroupId, did, role);
-    }
+      for (const [did, role] of state.roles) {
+        upsertRole(this.db, metaGroupId, did, role);
+      }
+    })();
 
     return state;
   }
